@@ -362,6 +362,10 @@ class NeroEmbodiment(EmbodimentBase):
             reading = self._arms[side].read_state()
             if reading is None or len(reading) != 7:
                 raise EmbodimentFault(f"no joint feedback from the {side} arm; check the CAN link")
+            if not all(math.isfinite(value) for value in reading):
+                raise EmbodimentFault(
+                    f"non-finite joint feedback from the {side} arm; check the CAN link"
+                )
             readings.extend(float(value) for value in reading)
         return np.asarray(readings)
 

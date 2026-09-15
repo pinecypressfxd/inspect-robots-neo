@@ -202,6 +202,15 @@ def test_step_clamps_per_tick_joint_delta() -> None:
     assert float(np.max(np.abs(left_commanded - pre["left"]))) > 0.02
 
 
+def test_non_finite_joint_feedback_raises_embodiment_fault() -> None:
+    harness = Harness()
+    harness.embodiment.reset(Scene(id="s0", instruction="x"))
+    harness.robots["left"].angles = (float("nan"), 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    action = _home_action(GRIPPER_INIT_WIDTH_M, GRIPPER_INIT_WIDTH_M)
+    with pytest.raises(EmbodimentFault, match="non-finite"):
+        harness.embodiment.step(Action(data=action))
+
+
 def _failing_camera_harness() -> tuple[Harness, CameraFactory]:
     """A harness whose camera factory blows up on the second camera (right_rgbd)."""
     harness = Harness()

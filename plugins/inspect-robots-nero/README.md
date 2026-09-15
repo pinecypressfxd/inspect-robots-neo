@@ -20,10 +20,11 @@
 Dual Nero arms on a shared shelf (channels `can_left`/`can_right`, firmware
 v112, 7 joints each, pika grippers, width 0 to 0.09 m) and three RealSense
 D405 color streams read as V4L2 devices (left/right/chest). Constants mirror
-the working bring-up config; the constructor arguments (`control_hz`,
-workspace bounds, `max_step`, `cameras`, `camera_max_age_s`,
-`reset_settle_timeout_s`, `operator_reset_confirm`) are overridable with
-`-E`, and the rest are fixed constants carried from that config.
+the working bring-up config; the scalar arguments (`control_hz`, `cameras`,
+`camera_max_age_s`, `reset_settle_timeout_s`, `operator_reset_confirm`) are
+overridable with `-E`, while workspace bounds and `max_step` are programmatic
+constructor arguments (pass them in Python when constructing `NeroEmbodiment`),
+and the rest are fixed constants carried from that config.
 
 ## Install
 
