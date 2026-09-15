@@ -1,10 +1,9 @@
-"""Pure rendering tests for the self-contained eval-log directory index."""
+"""Pure rendering tests for the self-contained task-library index page."""
 
 from __future__ import annotations
 
-from dataclasses import replace
-
-from inspect_robots._html_index import IndexEntry, render_index
+from inspect_robots._html_index import IndexEntry
+from inspect_robots._library import group_library, render_library
 
 
 def _entry(
@@ -13,168 +12,200 @@ def _entry(
     page: str | None = "run.html",
     created: str = "2026-07-30T12:00:00Z",
     instruction: str = "pick up the cube",
-    status: str = "completed",
-    status_class: str = "status-completed",
+    policy: str = "agent",
     metrics: dict[str, float] | None = None,
-    errored_trials: int = 0,
+    error: str | None = None,
+    success: bool = True,
 ) -> IndexEntry:
     return IndexEntry(
         name=name,
         page=page,
         created=created,
         instruction=instruction,
-        policy="agent",
+        policy=policy,
         model="provider/models/claude-test",
-        status=status,
-        status_class=status_class,
-        metrics={"success_at_end": 0.75} if metrics is None else metrics,
-        errored_trials=errored_trials,
+        status="completed",
+        status_class="status-completed",
+        metrics={"score": 50.0} if metrics is None else metrics,
+        errored_trials=0,
         termination="succeeded",
-        error=None,
+        error=error,
+        success=success,
     )
 
 
-def test_escaping_and_link_vs_no_link_rows() -> None:
-    document = render_index(
-        [
-            _entry("linked.json", instruction="<script>alert(1)</script>"),
-            _entry("broken.json", page=None),
-        ]
+def _document(
+    entries: list[IndexEntry],
+    *,
+    loose: list[IndexEntry] | None = None,
+    refresh_seconds: int | None = None,
+) -> str:
+    return render_library(
+        group_library(entries), loose=loose or [], refresh_seconds=refresh_seconds
     )
 
-    assert "<script>alert(1)</script>" not in document
+
+def test_escaping_of_instructions_title_and_loose_names() -> None:
+    document = _document(
+        [_entry("linked.json", instruction="<script>alert(1)</script>")],
+        loose=[
+            _entry("gone.json", instruction="", page=None, error='<boom> & "gone"'),
+        ],
+    )
+
+    assert "<script>alert" not in document
     assert "&lt;script&gt;alert(1)&lt;/script&gt;" in document
-    assert '<a href="run.html">linked.json</a>' in document
-    assert '<a href="run.html">&lt;script&gt;' in document
-    assert ">broken.json</a>" not in document
+    assert "&lt;boom&gt; &amp; &quot;gone&quot;" in document
+    assert 'title="&lt;script&gt;alert(1)&lt;/script&gt;"' in document
 
 
-def test_badge_classes_are_used_verbatim_for_display_status() -> None:
-    document = render_index(
+def test_title_and_header_meta_escape_and_count_tasks_and_runs() -> None:
+    document = render_library(
+        group_library([_entry("a.json")]),
+        title="runs <b>&amp;</b> more",
+    )
+
+    assert "<title>runs &lt;b&gt;&amp;amp;&lt;/b&gt; more</title>" in document
+    assert "<h1>runs &lt;b&gt;&amp;amp;&lt;/b&gt; more</h1>" in document
+    assert '<div class="meta">1 task · 1 run</div>' in document
+
+    two = _document(
         [
-            _entry("complete.json"),
-            _entry("error.json", status="error", status_class="status-error"),
-            _entry(
-                "cancelled.json",
-                status="cancelled",
-                status_class="status-cancelled",
-            ),
-            _entry("live.json", status="running", status_class="status-running"),
+            _entry("a.json"),
+            _entry("b.json", instruction="fold the cloth"),
+            _entry("c.json", instruction="fold the cloth"),
+        ]
+    )
+    assert '<div class="meta">2 tasks · 3 runs</div>' in two
+
+
+def test_cards_link_task_pages_and_show_the_stats_line() -> None:
+    document = _document(
+        [
+            _entry("a.json"),
+            _entry("b.json", metrics={"score": 0.666666}, success=False),
         ]
     )
 
-    assert '<span class="badge status-completed">completed</span>' in document
-    assert '<span class="badge status-error">error</span>' in document
-    assert '<span class="badge status-cancelled">cancelled</span>' in document
-    assert '<span class="badge status-running">running</span>' in document
-    assert ".status-running { color: var(--amber); background: var(--amber-bg); }" in document
+    assert '<a class="task-card" href="task-pick-up-the-cube.html"' in document
+    assert "2 runs · success 1/2 · mean score 25.33" in document
+    single = _document([_entry("only.json", metrics={})])
+    assert "1 run · success 1/1 · mean score n/a" in single
 
 
-def test_rows_are_newest_first_and_metrics_use_four_significant_figures() -> None:
-    document = render_index(
+def test_card_stats_line_uses_four_significant_figures() -> None:
+    document = _document([_entry("a.json", metrics={"score": 0.666666})])
+
+    assert "mean score 0.6667" in document
+
+
+def test_policy_chips_and_card_policy_data() -> None:
+    document = _document(
         [
-            _entry(
-                "old.json",
-                created="2026-07-29T12:00:00Z",
-                metrics={"distance": 0.0123456},
-            ),
-            _entry(
-                "new.json",
-                created="2026-07-30T12:00:00Z",
-                metrics={"success": 0.666666},
-                errored_trials=1,
-            ),
+            _entry("a.json", policy="agent"),
+            _entry("b.json", policy="pi0", instruction="fold the cloth"),
         ]
+    )
+
+    assert '<div class="chips">' in document
+    assert (
+        '<button type="button" class="chip" data-policy="agent" '
+        'aria-pressed="false">agent</button>' in document
+    )
+    assert 'data-policy="[&quot;agent&quot;]"' in document
+    assert 'data-policy="[&quot;pi0&quot;]"' in document
+    # Card data-text carries the instruction and policies for the text filter.
+    assert 'data-text="pick up the cube agent"' in document
+
+
+def test_runs_without_policy_get_no_chip_and_no_policy_attributes() -> None:
+    document = _document([_entry("a.json", policy="")])
+
+    assert "<button" not in document
+    assert 'data-policy="' not in document
+    assert '<div class="policies">' not in document
+
+
+def test_loose_rows_link_pages_and_stay_plain_without_one() -> None:
+    document = _document(
+        [],
+        loose=[
+            _entry("linked.json", instruction="", page="linked.html"),
+            _entry("gone.json", instruction="", page=None, error="unreadable: boom"),
+        ],
+    )
+
+    assert '<td class="log"><a href="linked.html">linked.json</a></td>' in document
+    assert '<td class="log">gone.json</td>' in document
+    assert "no evaluation logs found" not in document
+
+
+def test_loose_rows_are_newest_first() -> None:
+    document = _document(
+        [],
+        loose=[
+            _entry("old.json", instruction="", page=None, created="2026-07-29T12:00:00Z"),
+            _entry("new.json", instruction="", page=None, created="2026-07-30T12:00:00Z"),
+        ],
     )
 
     assert document.index("new.json") < document.index("old.json")
-    assert "distance=0.01235" in document
-    assert "success=0.6667" in document
-    assert '<span class="errored">(1 errored)</span>' in document
-    assert 'agent <span class="muted">/ claude-test</span>' in document
 
 
-def test_non_finite_metric_written_as_null_renders_as_not_available() -> None:
-    """Regression for #253: sanitize() writes inf/nan metrics as JSON null;
-    the index row must render that ``None`` instead of crashing on ``.4g``."""
-    document = render_index(
-        [_entry("run.json", metrics={"min_distance_to_goal": None})]  # type: ignore[dict-item]
-    )
-
-    assert "min_distance_to_goal=n/a" in document
-
-
-def test_filter_script_and_persisted_key_are_present() -> None:
-    document = render_index([_entry("run.json")])
-
-    assert 'id="filter"' in document
-    assert "row.textContent.toLocaleLowerCase().includes(query)" in document
-    assert "localStorage.setItem" in document
-    assert "localStorage.getItem" in document
-    assert "inspect-robots-index-filter" in document
-
-
-def test_row_with_page_has_escaped_data_href() -> None:
-    document = render_index([_entry("run.json", page='run"&report.html')])
-
-    assert '<tr data-href="run&quot;&amp;report.html">' in document
-    assert '<tr data-href="run"&amp;report.html">' not in document
-
-
-def test_row_without_page_has_no_data_href_attribute() -> None:
-    document = render_index([_entry("run.json", page=None)])
-
-    assert '<tr data-href="' not in document
-
-
-def test_delegated_row_click_listener_is_present_once() -> None:
-    document = render_index([_entry("run.json")])
-
-    assert document.count('addEventListener("click"') == 1
-    assert 'event.target.closest("tr[data-href]")' in document
-    assert 'event.target.closest("a")' in document
-    assert "getSelection().toString()" in document
-    assert "event.shiftKey || event.altKey" in document
-    assert "event.metaKey || event.ctrlKey" in document
-    assert "row.dataset.href" in document
-    assert "opened.opener = null" in document
-
-
-def test_clickable_row_cursor_style_is_present() -> None:
-    document = render_index([_entry("run.json")])
-
-    assert "tbody tr[data-href] { cursor: pointer; }" in document
-
-
-def test_empty_index_has_no_data_href_attribute() -> None:
-    document = render_index([])
+def test_empty_library_renders_the_empty_state() -> None:
+    document = render_library([], loose=[])
 
     assert "<!doctype html>" in document
-    assert '<tr data-href="' not in document
+    assert "no evaluation logs found" in document
 
 
-def test_static_index_has_no_meta_refresh() -> None:
-    document = render_index([_entry("run.json")], refresh_seconds=None)
+def test_static_library_has_no_meta_refresh() -> None:
+    document = _document([_entry("run.json")], refresh_seconds=None)
 
     assert '<meta http-equiv="refresh"' not in document
 
 
-def test_served_index_has_exact_meta_refresh() -> None:
-    document = render_index([_entry("run.json")], refresh_seconds=60)
+def test_served_library_has_exact_meta_refresh() -> None:
+    document = _document([_entry("run.json")], refresh_seconds=60)
 
     assert '<meta http-equiv="refresh" content="60">' in document
 
 
+def test_filter_script_and_persisted_keys_are_present() -> None:
+    document = _document([_entry("run.json")])
+
+    assert 'id="filter"' in document
+    assert "localStorage.setItem" in document
+    assert "localStorage.getItem" in document
+    assert "inspect-robots-library-filter" in document
+    assert "inspect-robots-library-policies" in document
+    assert "dataset.text.toLocaleLowerCase().includes(query)" in document
+    assert "excluded.has(name)" in document
+
+
+def test_chip_toggle_script_is_wired_once() -> None:
+    document = _document([_entry("run.json")])
+
+    assert document.count('addEventListener("click"') == 1
+    assert 'chips.forEach(chip => chip.addEventListener("click"' in document
+    assert "syncChips();" in document
+    assert "aria-pressed" in document
+
+
 def test_long_error_is_truncated_with_full_escaped_tooltip() -> None:
     error = 'failed <badly> "' + "x" * 200
-    entry = replace(
-        _entry("broken.json"),
-        status="error",
-        status_class="status-error",
-        error=error,
+    document = _document(
+        [],
+        loose=[_entry("broken.json", instruction="", page=None, error=error)],
     )
-
-    document = render_index([entry])
 
     assert f'title="failed &lt;badly&gt; &quot;{"x" * 200}"' in document
     assert "…" in document
+
+
+def test_palette_variables_carry_over_from_the_flat_index() -> None:
+    document = _document([_entry("run.json")])
+
+    assert "--link: #245ca6;" in document
+    assert "@media (prefers-color-scheme: dark)" in document
+    assert '.chip[aria-pressed="true"]' in document

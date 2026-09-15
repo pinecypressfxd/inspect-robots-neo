@@ -2317,8 +2317,8 @@ def test_view_directory_end_to_end_and_unreadable_log(
     assert (html_dir / "newer.html").is_file()
     assert not (html_dir / "foreign.html").exists()
     index = (html_dir / "index.html").read_text(encoding="utf-8")
-    assert index.index("newer.json") < index.index("older.json")
-    assert 'href="newer.html"' in index and 'href="older.html"' in index
+    assert 'href="task-pick-up-the-cube.html"' in index
+    assert 'href="task-place-the-cube.html"' in index
     assert "foreign.json" in index and "unreadable:" in index
     assert out.out.startswith(f"index: {html_dir / 'index.html'} (3 logs, 2 pages, ")
     assert "[1/3] rendering foreign.json" not in out.err
@@ -2346,12 +2346,12 @@ def test_view_directory_includes_log_with_sanitized_null_metric(
     assert "could not read or render" not in out.err
     assert (logs / "html" / "null-metric.html").is_file()
     index = (logs / "html" / "index.html").read_text(encoding="utf-8")
-    assert "null-metric.json" in index
-    assert "min_distance_to_goal=n/a" in index
+    assert "pick up the cube" in index
+    assert "mean score n/a" in index
     assert out.out.startswith(f"index: {logs / 'html' / 'index.html'} (1 logs, 1 pages, ")
 
 
-def test_view_directory_multi_scene_metrics_empty_samples_and_errored_trials(
+def test_view_directory_groups_multi_scene_and_empty_logs_into_tasks(
     tmp_path: Path,
 ) -> None:
     logs = tmp_path / "logs"
@@ -2394,12 +2394,8 @@ def test_view_directory_multi_scene_metrics_empty_samples_and_errored_trials(
 
     index = (logs / "html" / "index.html").read_text(encoding="utf-8")
     assert "shared instruction" in index
-    assert "mean_score=0.3333" in index
-    assert "succeeded, hit step limit" in index
-    assert '<span class="badge status-completed">completed</span>' in index
-    assert '<span class="errored">(1 errored)</span>' in index
+    assert "1 run · success 1/1 · mean score n/a" in index
     assert "0 scenes" in index
-    assert '<span class="badge status-cancelled">cancelled</span>' in index
 
 
 def test_view_directory_incremental_mtime_and_force(
@@ -2491,7 +2487,7 @@ def test_view_directory_index_log_uses_collision_free_page(tmp_path: Path) -> No
     html_dir = logs / "html"
     assert (html_dir / "index.html").is_file()
     assert (html_dir / "index_log.html").is_file()
-    assert 'href="index_log.html"' in (html_dir / "index.html").read_text(encoding="utf-8")
+    assert "pick up the cube" in (html_dir / "index.html").read_text(encoding="utf-8")
 
 
 def test_view_directory_index_log_suffix_uses_run_targets_not_filesystem(
@@ -2599,7 +2595,7 @@ def test_view_serve_initial_live_refresh_and_static_live_page_rules(
     assert '<meta http-equiv="refresh" content="2">' in index
     assert '<meta http-equiv="refresh" content="2">' in page
     assert "RUNNING — refreshes every 2s" in page
-    assert '<span class="badge status-running">running</span>' in index
+    assert "pick up the cube" in index
 
     assert main(["view", str(logs), "--force"]) == 0
     static_page = (logs / "html" / "run.live.html").read_text(encoding="utf-8")

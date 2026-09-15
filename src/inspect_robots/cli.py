@@ -70,7 +70,7 @@ from inspect_robots._html import (
     _status_class,
     render_html,
 )
-from inspect_robots._html_index import IndexEntry, render_index
+from inspect_robots._html_index import IndexEntry
 from inspect_robots._pointers import derive_blob_dir, read_jsonl_prefix, resolve_log_pointer
 from inspect_robots.conformance import device_slots
 from inspect_robots.console import USAGE, USAGE_END_ONLY
@@ -2250,6 +2250,7 @@ def _render_view_directory(
 ) -> _DirectoryRenderResult:
     """Render one incremental logs-directory pass and return its output paths."""
     from inspect_robots import read_eval_log
+    from inspect_robots._library import group_library, render_library
 
     if args.out == "-":
         raise SystemExit("-o - cannot be used with a logs directory; pass an output directory")
@@ -2354,8 +2355,12 @@ def _render_view_directory(
             print(f"warning: could not redirect {live_page.name}: {exc}", file=sys.stderr)
 
     index_path = out_dir / "index.html"
+    tasks = group_library(entries)
+    # Runs that carry no instruction (unreadable logs) group into no task;
+    # they stay visible as flat rows instead of silently disappearing.
+    loose = [entry for entry in entries if not entry.instruction]
     bytes_written += _write_html_atomic(
-        render_index(entries, refresh_seconds=refresh_seconds),
+        render_library(tasks, loose=loose, refresh_seconds=refresh_seconds),
         index_path,
     )
     if not quiet:
