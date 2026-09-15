@@ -11,6 +11,8 @@ import time
 from collections.abc import Callable, Sequence
 from typing import Any
 
+from inspect_robots_nero._config import FIRMWARE_VERSION
+
 _FIRMWARE_NAMES = {
     "default": "DEFAULT",
     "v111": "V111",
@@ -30,7 +32,7 @@ class NeroArm:
         side: str,
         channel: str,
         *,
-        firmware: str = "v112",
+        firmware: str = FIRMWARE_VERSION,
         robot: Any | None = None,
         connect_sleep_s: float = 0.5,
         sleep: Callable[[float], None] = time.sleep,
