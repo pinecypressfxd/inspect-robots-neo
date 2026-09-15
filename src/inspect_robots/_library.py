@@ -341,6 +341,7 @@ input.addEventListener("input", applyFilter);
 chips.forEach(chip => chip.addEventListener("click", () => {{
   const name = chip.dataset.policy;
   if (excluded.has(name)) {{ excluded.delete(name); }} else {{ excluded.add(name); }}
+  try {{ localStorage.setItem(policyKey, JSON.stringify(Array.from(excluded))); }} catch (_) {{}}
   syncChips();
   applyFilter();
 }}));

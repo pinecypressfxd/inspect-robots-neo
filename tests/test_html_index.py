@@ -175,12 +175,16 @@ def test_filter_script_and_persisted_keys_are_present() -> None:
     document = _document([_entry("run.json")])
 
     assert 'id="filter"' in document
-    assert "localStorage.setItem" in document
     assert "localStorage.getItem" in document
     assert "inspect-robots-library-filter" in document
     assert "inspect-robots-library-policies" in document
     assert "dataset.text.toLocaleLowerCase().includes(query)" in document
     assert "excluded.has(name)" in document
+    # Both persisted keys must be written, not just read: a serve-mode meta
+    # refresh otherwise wipes one of them every interval.
+    assert document.count("localStorage.setItem") == 2
+    assert "setItem(filterKey" in document
+    assert "setItem(policyKey" in document
 
 
 def test_chip_toggle_script_is_wired_once() -> None:
