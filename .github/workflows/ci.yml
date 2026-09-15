@@ -490,7 +490,7 @@ jobs:
   alert-red-main:
     name: alert on red main
     if: ${{ failure() && github.event_name == 'push' }}
-    needs: [quality, docs-build, test, test-rerun, test-extra, core-only-import, plugin-isaacsim, plugin-xpolicylab, plugin-voice, plugin-ros, plugin-agent, plugin-capx]
+    needs: [quality, docs-build, test, test-rerun, test-extra, core-only-import, plugin-isaacsim, plugin-xpolicylab, plugin-voice, plugin-ros, plugin-agent, plugin-capx, plugin-nero]
     runs-on: ubuntu-latest
     permissions:
       issues: write
