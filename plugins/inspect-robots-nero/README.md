@@ -20,7 +20,10 @@
 Dual Nero arms on a shared shelf (channels `can_left`/`can_right`, firmware
 v112, 7 joints each, pika grippers, width 0 to 0.09 m) and three RealSense
 D405 color streams read as V4L2 devices (left/right/chest). Constants mirror
-the working bring-up config; every value is overridable with `-E`.
+the working bring-up config; the constructor arguments (`control_hz`,
+workspace bounds, `max_step`, `cameras`, `camera_max_age_s`,
+`reset_settle_timeout_s`, `operator_reset_confirm`) are overridable with
+`-E`, and the rest are fixed constants carried from that config.
 
 ## Install
 

@@ -54,6 +54,35 @@ ArmFactory = Callable[[str], Any]
 CameraFactory = Callable[[str], Any]
 
 
+def _parse_camera_overrides(value: str) -> dict[str, str]:
+    """Parse the ``-E cameras=`` string form: ``name=device`` comma entries.
+
+    Mirrors the ros adapter's ``_parse_cameras`` string handling: entries split
+    on the first ``=`` so device paths need no quoting, blank entries are
+    skipped, and a non-blank string that yields no entries is an error. Device
+    emptiness is validated by the caller so both input forms share one error.
+    """
+    overrides: dict[str, str] = {}
+    for raw_entry in value.split(","):
+        entry = raw_entry.strip()
+        if not entry:
+            continue
+        name, separator, device = entry.partition("=")
+        name = name.strip()
+        if not separator or not name:
+            raise ValueError(
+                f"cameras entry {entry!r} must be name=device, for example left_rgbd=/dev/video0"
+            )
+        if name in overrides:
+            raise ValueError(
+                f"cameras contains duplicate name {name!r}; camera names must be unique"
+            )
+        overrides[name] = device.strip()
+    if value.strip() and not overrides:
+        raise ValueError(f"cameras string form parsed to no overrides: {value!r}")
+    return overrides
+
+
 def _bounds_for(
     workspace_low: Sequence[float], workspace_high: Sequence[float]
 ) -> tuple[list[float], list[float]]:
@@ -65,7 +94,13 @@ def _bounds_for(
 
 
 class NeroEmbodiment(EmbodimentBase):
-    """Drive the dual Nero arms with absolute end-effector pose actions."""
+    """Drive the dual Nero arms with absolute end-effector pose actions.
+
+    ``cameras`` accepts a mapping of camera name to device path (programmatic
+    use) or the ``-E`` string form ``name=device`` with comma-separated
+    entries; both override only the named devices and leave the other
+    ``CAMERA_DEFAULTS`` entries untouched.
+    """
 
     def __init__(
         self,
@@ -74,7 +109,7 @@ class NeroEmbodiment(EmbodimentBase):
         workspace_low: tuple[float, float, float] | None = None,
         workspace_high: tuple[float, float, float] | None = None,
         max_step: tuple[float | None, ...] | None = None,
-        cameras: Mapping[str, str] | None = None,
+        cameras: Mapping[str, str] | str | None = None,
         operator_reset_confirm: bool = True,
         reset_settle_timeout_s: float = RESET_SETTLE_TIMEOUT_S,
         camera_max_age_s: float = CAMERA_MAX_AGE_S,
@@ -131,13 +166,16 @@ class NeroEmbodiment(EmbodimentBase):
 
         resolved_cameras = dict(CAMERA_DEFAULTS)
         if cameras is not None:
-            unknown = sorted(set(cameras) - set(CAMERA_DEFAULTS))
+            overrides: Mapping[str, str] = (
+                _parse_camera_overrides(cameras) if isinstance(cameras, str) else cameras
+            )
+            unknown = sorted(set(overrides) - set(CAMERA_DEFAULTS))
             if unknown:
                 raise ValueError(
                     f"cameras keys {unknown} are not declared cameras; "
                     f"valid names: {sorted(CAMERA_DEFAULTS)}"
                 )
-            for camera_name, device in cameras.items():
+            for camera_name, device in overrides.items():
                 if not isinstance(device, str) or not device:
                     raise ValueError(
                         f"camera {camera_name!r} override must be a non-empty device path"

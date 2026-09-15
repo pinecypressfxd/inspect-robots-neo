@@ -8,7 +8,7 @@ import pytest
 
 from inspect_robots.conformance import assert_embodiment_conformant
 from inspect_robots_nero import nero_embodiment
-from inspect_robots_nero._config import ACTION_DIM, DIM_LABELS
+from inspect_robots_nero._config import ACTION_DIM, CAMERA_DEFAULTS, DIM_LABELS
 
 
 def test_action_space_shape_and_semantics() -> None:
@@ -72,6 +72,39 @@ def test_invalid_camera_name_lists_valid_names() -> None:
 def test_invalid_camera_override_device() -> None:
     with pytest.raises(ValueError, match="non-empty"):
         nero_embodiment(cameras={"left_rgbd": ""})
+
+
+def test_camera_string_form_overrides_only_named_device() -> None:
+    embodiment = nero_embodiment(cameras="left_rgbd=/dev/video9")
+    assert embodiment.cameras["left_rgbd"]["device"] == "/dev/video9"
+    assert embodiment.cameras["right_rgbd"]["device"] == CAMERA_DEFAULTS["right_rgbd"]["device"]
+    assert embodiment.cameras["chest_rgbd"]["device"] == CAMERA_DEFAULTS["chest_rgbd"]["device"]
+
+
+def test_camera_comma_string_form_overrides_two_devices() -> None:
+    embodiment = nero_embodiment(cameras="left_rgbd=/dev/a,right_rgbd=/dev/b")
+    assert embodiment.cameras["left_rgbd"]["device"] == "/dev/a"
+    assert embodiment.cameras["right_rgbd"]["device"] == "/dev/b"
+
+
+def test_camera_string_form_unknown_name_lists_valid_names() -> None:
+    with pytest.raises(ValueError, match="left_rgbd"):
+        nero_embodiment(cameras="wrist=/dev/video0")
+
+
+def test_camera_string_form_empty_device_keeps_nonempty_error() -> None:
+    with pytest.raises(ValueError, match="non-empty"):
+        nero_embodiment(cameras="left_rgbd=")
+
+
+def test_camera_string_form_rejects_malformed_entry() -> None:
+    with pytest.raises(ValueError, match="name=device"):
+        nero_embodiment(cameras="left_rgbd")
+
+
+def test_camera_string_form_rejects_duplicate_name() -> None:
+    with pytest.raises(ValueError, match="duplicate"):
+        nero_embodiment(cameras="left_rgbd=/dev/a,left_rgbd=/dev/b")
 
 
 def test_invalid_workspace_bounds() -> None:
