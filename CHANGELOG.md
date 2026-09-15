@@ -7,6 +7,13 @@ All notable changes to this project are documented here. The format is based on
 
 ## [Unreleased]
 
+### Changed
+
+- **Core:** `inspect-robots view LOG_DIR` now renders a task library: a task
+  index with search and policy filters, per-task pages with rollout tabs, and
+  playback-synced decision cards (rationale plus per-arm command deltas from
+  the actions side-car) on each run page.
+
 ### Added
 
 - **Plugins:** `inspect-robots-nero`, a real-hardware embodiment for the lab's

@@ -635,6 +635,11 @@ pages remain upgradeable: the next eligible plain `view` pass re-renders them
 with the composite MP4. Reports created before this behavior need `--force`
 once to gain embedded video.
 
+Directory renders group runs into a task library: the index lists tasks with
+search and policy filters, each task page tabs between rollouts, and every run
+page shows a decision card synced to playback with the policy's rationale and
+per-arm command deltas from the actions side-car.
+
 ## `inspect-robots video`
 
 Render a `--store-frames` run's stored camera frames into one MP4 per
