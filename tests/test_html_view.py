@@ -2076,3 +2076,184 @@ def test_wire_malformed_request_degrades_to_an_empty_call(tmp_path: Path) -> Non
     assert "Trial 0 Wire" in document
     assert "no new messages" in document
     assert "<dd>n/a</dd>" in document
+
+
+def _sidecar_lines(dir_path: Path, pointer: str, lines: Sequence[str]) -> None:
+    """Write raw JSONL side-car lines at a log-dir-relative pointer."""
+    path = dir_path / pointer
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("".join(f"{line}\n" for line in lines), encoding="utf-8")
+
+
+def _sidecar(dir_path: Path, rows: Sequence[Sequence[float]], *, action_dim: int = 20) -> None:
+    """Write a dual-arm action side-car: one header row, then one row per step."""
+    lines = [json.dumps({"action_dim": action_dim, "control_mode": "eef_abs_pose"})]
+    lines.extend(json.dumps({"t": t, "action": list(row)}) for t, row in enumerate(rows))
+    _sidecar_lines(dir_path, "actions/20260915/test.jsonl", lines)
+
+
+def _decision_log(transcripts: Sequence[object], pointers: Sequence[str | None]) -> EvalLog:
+    """Build a golden log whose trial metadata carries actions side-car pointers."""
+    log = _log(transcripts=tuple(transcripts))
+    metadata = tuple({} if pointer is None else {"actions": pointer} for pointer in pointers)
+    scene = dataclasses.replace(log.samples[0], trial_metadata=metadata)
+    return dataclasses.replace(log, samples=(scene,))
+
+
+def _observing_chat() -> list[object]:
+    return _chat({"role": "user", "content": "observe"})
+
+
+def test_decision_card_embeds_command_deltas(tmp_path: Path) -> None:
+    # Dual-arm layout: left xyz(3) rot6d(6) gripper(1) right xyz(3) rot6d(6) gripper(1).
+    first = [0.30, 0.0, 0.1] + [0.0] * 6 + [0.04] + [0.20, 0.0, 0.0] + [0.0] * 6 + [0.09]
+    second = list(first)
+    second[0] += 0.01  # left x +1 cm
+    second[10] -= 0.01  # right x -1 cm
+    _sidecar(tmp_path, [first, second])
+
+    document = render_html(
+        _decision_log(_observing_chat(), ("actions/20260915/test.jsonl",)),
+        title="deltas",
+        log_path=tmp_path / "run.json",
+    )
+
+    assert 'class="decision-card"' in document
+    assert 'class="decision-data"' in document
+    assert "no command data" not in document
+    payload = document.split('class="decision-data">', 1)[1].split("</script>", 1)[0]
+    steps = json.loads(payload)["steps"]
+    assert steps[0] == {
+        "t": 0,
+        "l": [0.0, 0.0, 0.0],
+        "r": [0.0, 0.0, 0.0],
+        "lg": 0.04,
+        "rg": 0.09,
+    }
+    assert steps[1]["t"] == 1
+    assert steps[1]["l"] == [1.0, 0.0, 0.0]
+    assert steps[1]["r"] == [-1.0, 0.0, 0.0]
+    assert steps[1]["lg"] == 0.04
+    assert steps[1]["rg"] == 0.09
+    # Compact separators: the payload is one line with no spaces after , or :.
+    assert '"t":0,"l":[0.0,0.0,0.0]' in document
+    assert "<span data-decision-index>–</span>" in document
+    assert "<span data-decision-step>–</span>" in document
+    assert "<span data-decision-rationale>–</span>" in document
+    assert "<span data-decision-commands>–</span>" in document
+    assert "</script><script" not in document.split('class="decision-data"')[1][:200]
+
+
+@pytest.mark.parametrize(
+    "mode",
+    [
+        "no-log-path",
+        "missing-key",
+        "missing-file",
+        "traversal",
+        "garbage",
+        "empty",
+        "header-only",
+        "wrong-dim",
+        "short-action",
+        "string-t",
+        "non-numeric-action",
+        "non-finite",
+    ],
+)
+def test_decision_card_degrades_without_usable_sidecar(tmp_path: Path, mode: str) -> None:
+    pointer = "actions/20260915/test.jsonl"
+    if mode == "garbage":
+        _sidecar_lines(tmp_path, pointer, ["not json at all"])
+    elif mode == "empty":
+        _sidecar_lines(tmp_path, pointer, [])
+    elif mode == "header-only":
+        _sidecar_lines(tmp_path, pointer, ['{"action_dim": 20}'])
+    elif mode == "wrong-dim":
+        _sidecar(tmp_path, [[0.0] * 20, [0.01] + [0.0] * 19], action_dim=7)
+    elif mode == "short-action":
+        _sidecar(tmp_path, [[0.0] * 19])
+    elif mode == "string-t":
+        _sidecar_lines(
+            tmp_path,
+            pointer,
+            ['{"action_dim": 20}', json.dumps({"t": "soon", "action": [0.0] * 20})],
+        )
+    elif mode == "non-numeric-action":
+        _sidecar_lines(
+            tmp_path,
+            pointer,
+            ['{"action_dim": 20}', json.dumps({"t": 0, "action": ["left"] + [0.0] * 19})],
+        )
+    elif mode == "non-finite":
+        _sidecar_lines(
+            tmp_path,
+            pointer,
+            ['{"action_dim": 20}', json.dumps({"t": 0, "action": [float("nan")] + [0.0] * 19})],
+        )
+    carried = (
+        None
+        if mode == "missing-key"
+        else ("../outside/test.jsonl" if mode == "traversal" else pointer)
+    )
+
+    document = render_html(
+        _decision_log(_observing_chat(), (carried,)),
+        title="degrade",
+        log_path=None if mode == "no-log-path" else tmp_path / "run.json",
+    )
+
+    assert 'class="decision-card"' in document
+    assert "no command data" in document
+    assert 'class="decision-data"' not in document
+    assert "<span data-decision-commands>–</span>" in document
+
+
+def test_decision_payload_has_no_raw_close_tag(tmp_path: Path) -> None:
+    _sidecar(tmp_path, [[0.0] * 20])
+
+    document = render_html(
+        _decision_log(_observing_chat(), ("actions/20260915/test.jsonl",)),
+        title="safe",
+        log_path=tmp_path / "run.json",
+    )
+
+    body = document.split('class="decision-data">', 1)[1].split("</script>", 1)[0]
+    assert "</script>" not in body
+    assert json.loads(body) == {
+        "steps": [{"t": 0, "l": [0.0, 0.0, 0.0], "r": [0.0, 0.0, 0.0], "lg": 0.0, "rg": 0.0}]
+    }
+    assert document.count('type="application/json"') == 1
+
+
+def test_decision_card_is_per_trial_and_tracks_its_transcript(tmp_path: Path) -> None:
+    _sidecar(tmp_path, [[0.0] * 20, [0.01] + [0.0] * 19])
+    log = _decision_log(
+        (_chat({"role": "user", "content": "first"}), _chat({"role": "user", "content": "second"})),
+        ("actions/20260915/test.jsonl",),
+    )
+
+    document = render_html(log, title="per trial", log_path=tmp_path / "run.json")
+
+    assert document.count('class="decision-card"') == 2
+    assert document.count('class="decision-data"') == 1
+    assert document.count("no command data") == 1
+    trials = document.split('<details class="transcript"')
+    assert 'class="decision-data"' in trials[1]
+    assert "no command data" in trials[2]
+    assert (
+        document.index("Trial 0 transcript</summary>")
+        < document.index('class="decision-card"')
+        < document.index('class="conversation"')
+    )
+
+
+def test_decision_card_js_rides_the_shared_step_computation() -> None:
+    document = render_html(_log(), title="wiring")
+
+    assert "updateDecisionCard(block, step, activeTurn);" in document
+    assert "Number(frames[position].dataset.step)" in document
+    assert "textContent.trim().slice(0, 240)" in document
+    assert "L Δxyz ${delta(row.l)} cm · R Δxyz ${delta(row.r)} cm" in document
+    assert "gripper L ${Number(row.lg)} m · R ${Number(row.rg)} m" in document
+    assert "querySelector('[data-decision-commands]')" in document

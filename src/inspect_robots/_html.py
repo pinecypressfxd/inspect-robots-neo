@@ -33,6 +33,9 @@ _VIDEO_BUDGET_BYTES = 30_000_000
 _BLOB_SENTINEL_RE = re.compile(r"\$blob:([^\s]+)")
 _BLOB_SHA_RE = re.compile(r"[0-9a-f]{64}")
 _CAMERA_FRAME_RE = re.compile(r"^(.+)_(\d{6,})\.npy$")
+# Only the dual-arm layout [left xyz(3) rot6d(6) gripper(1) right xyz(3) rot6d(6)
+# gripper(1)] has per-arm command deltas to show; any other action_dim degrades.
+_DECISION_ACTION_DIM = 20
 _MISSING = object()
 
 _FRAME_CLICK_SCRIPT = """document.addEventListener('click', (event) => {
@@ -54,6 +57,36 @@ _FLIPBOOK_SCRIPT = """document.addEventListener('DOMContentLoaded', () => {
       if (!video) return;
       if (!transcript || transcript.open) void video.play().catch(() => {});
       else video.pause();
+    };
+
+    const updateDecisionCard = (block, currentStep, activeTurn) => {
+      const scope = block.closest('details.transcript');
+      const card = scope ? scope.querySelector('.decision-card') : null;
+      if (!card) return;
+      let payload = null;
+      try {
+        payload = JSON.parse(card.querySelector('.decision-data')?.textContent || 'null');
+      } catch (_error) { /* A hostile payload leaves the placeholders in place. */ }
+      const decisionSteps = payload && Array.isArray(payload.steps) ? payload.steps : [];
+      let row = null;
+      let decision = 0;
+      decisionSteps.forEach((candidate, index) => {
+        if (candidate && Number.isFinite(candidate.t) && candidate.t <= currentStep) {
+          row = candidate;
+          decision = index;
+        }
+      });
+      card.querySelector('[data-decision-index]').textContent =
+        row === null ? '–' : String(decision);
+      card.querySelector('[data-decision-step]').textContent =
+        row === null ? '–' : String(row.t);
+      const rationale = activeTurn ? activeTurn.textContent.trim().slice(0, 240) : '';
+      card.querySelector('[data-decision-rationale]').textContent = rationale || '–';
+      const delta = (values) => `[${values.map((value) => Number(value)).join(' ')}]`;
+      card.querySelector('[data-decision-commands]').textContent = row === null ? '–' : (
+        `L Δxyz ${delta(row.l)} cm · R Δxyz ${delta(row.r)} cm · ` +
+        `gripper L ${Number(row.lg)} m · R ${Number(row.rg)} m`
+      );
     };
 
     const railVideo = block.querySelector('.video-panel video[data-steps]');
@@ -80,13 +113,15 @@ _FLIPBOOK_SCRIPT = """document.addEventListener('DOMContentLoaded', () => {
           }
           while (position >= 0 && steppedTurns[position][0] > step) position -= 1;
           const nextTurn = position >= 0 ? steppedTurns[position][1] : null;
-          if (nextTurn === activeTurn) return;
-          if (activeTurn) activeTurn.classList.remove('active');
-          if (nextTurn) nextTurn.classList.add('active');
-          activeTurn = nextTurn;
-          if (activeTurn && follow?.classList.contains('active')) {
-            activeTurn.scrollIntoView({block: 'nearest'});
+          if (nextTurn !== activeTurn) {
+            if (activeTurn) activeTurn.classList.remove('active');
+            if (nextTurn) nextTurn.classList.add('active');
+            activeTurn = nextTurn;
+            if (activeTurn && follow?.classList.contains('active')) {
+              activeTurn.scrollIntoView({block: 'nearest'});
+            }
           }
+          updateDecisionCard(block, step, activeTurn);
         };
         steppedTurns.forEach(([turnStep, turn]) => {
           const header = turn.querySelector('.turn-step');
@@ -149,6 +184,11 @@ _FLIPBOOK_SCRIPT = """document.addEventListener('DOMContentLoaded', () => {
       scrubber.max = String(frames.length - 1);
       scrubber.value = String(position);
       step.textContent = `step ${frames[position].dataset.step}`;
+      updateDecisionCard(
+        block,
+        Number(frames[position].dataset.step),
+        transcript ? transcript.querySelector('section.turn.active') : null
+      );
       toggle.textContent = paused ? 'Play' : 'Pause';
       panel.dataset.position = String(position);
       panel.dataset.paused = String(paused);
@@ -498,6 +538,17 @@ pre {
 .flipbook-controls { display: flex; gap: 9px; align-items: center; margin-top: 8px; }
 .flipbook-controls input { flex: 1; }
 .step-label { min-width: 62px; color: var(--muted); font-size: 12px; }
+.decision-card {
+  margin: 12px 0; padding: 10px 12px; background: var(--panel);
+  border: 1px solid var(--line); border-radius: 7px;
+}
+.decision-head { display: flex; gap: 4px 12px; flex-wrap: wrap; align-items: baseline; }
+.decision-key {
+  color: var(--muted); font-size: 11px; font-weight: 750;
+  letter-spacing: .07em; text-transform: uppercase;
+}
+.decision-body { margin-top: 4px; overflow-wrap: anywhere; }
+.decision-sub, .muted { color: var(--muted); }
 """.strip()
 
 
@@ -1105,6 +1156,64 @@ def _load_wire_rows(
     return loaded, blob_dir
 
 
+def _delta_cm(values: Sequence[float], previous: Sequence[float], offset: int) -> list[float]:
+    """Return one arm's xyz delta versus the previous action, in centimetres."""
+    return [round((values[offset + axis] - previous[offset + axis]) * 100, 4) for axis in range(3)]
+
+
+def _load_decision_steps(
+    log_path: Path | None, metadata: Mapping[str, Any]
+) -> list[dict[str, Any]]:
+    """Load one trial's actions sidecar as playback-syncable dual-arm command deltas.
+
+    Every absent, unreadable, malformed, or non-dual-arm sidecar degrades to
+    ``[]`` so the page always renders; the first step's deltas are zeros and
+    grippers stay absolute metres, all rounded to four decimals.
+    """
+    if log_path is None:
+        return []
+    target = resolve_log_pointer(log_path, metadata.get("actions"))
+    if target is None:
+        return []
+    rows = read_jsonl_prefix(target)
+    if rows is None:
+        return []
+    steps: list[dict[str, Any]] = []
+    previous: list[float] | None = None
+    for row in rows:
+        if "action_dim" in row:
+            if row["action_dim"] != _DECISION_ACTION_DIM:
+                return []
+            continue
+        action = row.get("action")
+        if (
+            not _is_number(row.get("t"))
+            or not isinstance(action, list)
+            or len(action) != _DECISION_ACTION_DIM
+            or not all(_is_number(value) for value in action)
+        ):
+            return []
+        values = [float(value) for value in action]
+        if not all(math.isfinite(value) for value in values):
+            return []
+        if previous is None:
+            left = right = [0.0, 0.0, 0.0]
+        else:
+            left = _delta_cm(values, previous, 0)
+            right = _delta_cm(values, previous, 10)
+        steps.append(
+            {
+                "t": int(row["t"]),
+                "l": left,
+                "r": right,
+                "lg": round(values[9], 4),
+                "rg": round(values[19], 4),
+            }
+        )
+        previous = values
+    return steps
+
+
 def _wire_blob_tokens(value: object) -> list[str]:
     """Return every blob token suffix found recursively in a captured value."""
     if isinstance(value, str):
@@ -1452,6 +1561,31 @@ def _flipbook_panel(camera: str, steps: Sequence[int]) -> str:
     )
 
 
+def _render_decision_card(steps: list[dict[str, Any]]) -> str:
+    """Render one trial's decision card with its embedded command-delta payload.
+
+    The payload is numeric JSON with every ``</`` escaped, the one embedding
+    form that cannot close the host script tag early; the spans stay at their
+    placeholders until the page's shared step computation fills them.
+    """
+    if steps:
+        payload = json.dumps({"steps": steps}, separators=(",", ":")).replace("</", "<\\/")
+        data = f'<script type="application/json" class="decision-data">{payload}</script>'
+    else:
+        data = '<div class="decision-sub muted">no command data</div>'
+    return (
+        '<aside class="decision-card">'
+        '<div class="decision-head"><span class="decision-key">decision</span>'
+        "<span data-decision-index>–</span>"
+        '<span class="decision-key">step</span>'
+        "<span data-decision-step>–</span></div>"
+        '<div class="decision-body"><span class="decision-key">rationale</span>'
+        "<span data-decision-rationale>–</span></div>"
+        '<div class="decision-body"><span class="decision-key">commands</span>'
+        f"<span data-decision-commands>–</span></div>{data}</aside>"
+    )
+
+
 def _scene_section(
     scene: SceneResult,
     *,
@@ -1545,9 +1679,11 @@ def _scene_section(
         residual.extend((trial, message) for message in unplaced)
         trial_prefix = _safe(f"{scene.scene_id}-e{trial}")
         media = _render_trial_media(frames_dir, trial_prefix, rendered_frames, video_context)
+        metadata = scene.trial_metadata[trial] if trial < len(scene.trial_metadata) else {}
+        decision = _render_decision_card(_load_decision_steps(log_path, metadata))
         transcript_blocks.append(
             f'<details class="transcript"{" open" if open_transcript else ""}>'
-            f"<summary>Trial {trial} transcript</summary>{media}{rendered}</details>"
+            f"<summary>Trial {trial} transcript</summary>{media}{decision}{rendered}</details>"
         )
     for trial in range(len(scene.policy_transcripts), len(scene.operator_messages)):
         residual.extend((trial, message) for message in scene.operator_messages[trial])
