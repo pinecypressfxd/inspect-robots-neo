@@ -7,6 +7,7 @@ from inspect_robots._library import (
     group_library,
     mean_score,
     render_library,
+    render_task_page,
     success_fraction,
     task_slug,
 )
@@ -127,3 +128,120 @@ def test_library_page_refresh_meta_and_empty_state() -> None:
 
     assert '<meta http-equiv="refresh" content="5">' in html
     assert "no evaluation logs found" in html
+
+
+def test_task_page_embeds_rollout_tabs_and_iframe() -> None:
+    tasks = group_library(
+        [
+            _entry("put the cup on the pad", "a.json", created="2026-09-14T00:00:00+00:00"),
+            _entry("put the cup on the pad", "b.json", success=False),
+        ]
+    )
+    html = render_task_page(tasks[0])
+
+    assert 'data-src="b.html"' in html and 'data-src="a.html"' in html
+    assert "<iframe" in html and "Rollout 1" in html and "Rollout 2" in html
+    assert 'href="index.html"' in html
+    assert "put the cup on the pad" in html and "1/2" in html
+
+
+def test_task_page_seeds_the_newest_enabled_tab_into_the_iframe() -> None:
+    tasks = group_library(
+        [
+            _entry("t", "old.json", created="2026-09-14T00:00:00+00:00"),
+            _entry("t", "new.json"),
+        ]
+    )
+    html = render_task_page(tasks[0])
+
+    assert html.count('class="tab active"') == 1
+    assert '<button type="button" class="tab active" data-src="new.html"' in html
+    assert '<iframe id="rollout-frame" title="rollout player" src="new.html">' in html
+    assert "frame.src = tab.dataset.src" in html
+
+
+def test_task_page_escapes_instruction() -> None:
+    tasks = group_library([_entry("<b>task</b>")])
+    html = render_task_page(tasks[0])
+
+    assert "<b>task</b>" not in html
+    assert "&lt;b&gt;task&lt;/b&gt;" in html
+
+
+def test_run_without_page_gets_a_disabled_tab() -> None:
+    tasks = group_library([_entry("t", page=None)])
+    html = render_task_page(tasks[0])
+
+    assert "disabled" in html
+    assert 'data-src="' not in html
+    assert '<iframe id="rollout-frame" title="rollout player">' in html
+
+
+def test_task_page_falls_back_to_the_next_run_when_the_newest_has_no_page() -> None:
+    tasks = group_library(
+        [
+            _entry("t", "gone.json", page=None),
+            _entry("t", "kept.json", created="2026-09-14T00:00:00+00:00"),
+        ]
+    )
+    html = render_task_page(tasks[0])
+
+    assert '<button type="button" class="tab" disabled title=' in html
+    assert 'data-src="kept.html"' in html
+    assert '<iframe id="rollout-frame" title="rollout player" src="kept.html">' in html
+
+
+def test_task_page_meta_line_and_policy_badges() -> None:
+    tasks = group_library(
+        [
+            _entry("t", "a.json", policy="agent"),
+            _entry("t", "b.json", policy="pi0", metrics={}, success=False),
+        ]
+    )
+    html = render_task_page(tasks[0])
+
+    assert "2 runs · success 1/2 · mean score 50" in html
+    assert '<span class="badge">agent</span>' in html
+    assert '<span class="badge">pi0</span>' in html
+
+
+def test_task_page_singular_run_and_missing_mean_score() -> None:
+    tasks = group_library([_entry("t", metrics={})])
+    html = render_task_page(tasks[0])
+
+    assert "1 run · success 1/1 · mean score n/a" in html
+
+
+def test_task_page_status_badges_carry_run_status() -> None:
+    tasks = group_library(
+        [
+            _entry("t", "a.json", status="running", status_class="status-running"),
+            _entry(
+                "t",
+                "b.json",
+                created="2026-09-14T00:00:00+00:00",
+                status="error",
+                status_class="status-error",
+            ),
+        ]
+    )
+    html = render_task_page(tasks[0])
+
+    assert '<span class="status status-running">running</span>' in html
+    assert '<span class="status status-error">error</span>' in html
+
+
+def test_task_page_refresh_meta_matches_the_library_page() -> None:
+    tasks = group_library([_entry("t")])
+    html = render_task_page(tasks[0], refresh_seconds=5)
+
+    assert '<meta http-equiv="refresh" content="5">' in html
+    assert '<meta http-equiv="refresh"' not in render_task_page(tasks[0])
+
+
+def test_task_page_tab_click_script_is_wired_once() -> None:
+    tasks = group_library([_entry("t")])
+    html = render_task_page(tasks[0])
+
+    assert html.count('addEventListener("click"') == 1
+    assert 'document.querySelectorAll("button.tab")' in html

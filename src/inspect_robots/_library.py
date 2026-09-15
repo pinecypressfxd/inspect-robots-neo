@@ -350,3 +350,123 @@ applyFilter();
 </body>
 </html>
 """
+
+
+_TASK_STYLES = """
+.back { display: inline-block; margin-bottom: 8px; font-size: 13px; }
+.badges { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.badge {
+  padding: 2px 9px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 12px;
+}
+.tabs { display: flex; flex-wrap: wrap; gap: 6px; margin: 22px 0 12px; }
+.tab {
+  padding: 7px 13px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+  cursor: pointer;
+}
+.tab.active { border-color: var(--link); color: var(--link); font-weight: 650; }
+.tab[disabled] { opacity: .55; cursor: default; }
+.tab .status {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+}
+.status-completed { color: var(--green); background: var(--green-bg); }
+.status-running { color: var(--amber); background: var(--amber-bg); }
+.status-error { color: var(--red); background: var(--red-bg); }
+.status-cancelled { color: var(--grey); background: var(--grey-bg); }
+.status-neutral { color: var(--neutral); background: var(--neutral-bg); }
+.frame-wrap { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); }
+#rollout-frame {
+  display: block;
+  width: 100%;
+  height: calc(100vh - 230px);
+  min-height: 480px;
+  border: 0;
+}
+""".strip()
+
+
+def _tab(index: int, run: IndexEntry, *, active: bool) -> str:
+    """Render one rollout tab; unlinked tabs stay disabled with no swap target."""
+    classes = "tab active" if active else "tab"
+    data_src = "" if run.page is None else f' data-src="{_escape(run.page)}"'
+    disabled = "" if run.page is not None else " disabled"
+    return (
+        f'<button type="button" class="{classes}"{data_src}{disabled} '
+        f'title="{_escape(run.name)} · {_escape(run.created)}">'
+        f"Rollout {index + 1} "
+        f'<span class="status {run.status_class}">{_escape(run.status)}</span></button>'
+    )
+
+
+def render_task_page(task: LibraryTask, *, refresh_seconds: int | None = None) -> str:
+    """Return one self-contained HTML page tabbing between the task's run pages."""
+    policies = sorted({run.policy for run in task.runs if run.policy})
+    badges = (
+        "".join(f'<span class="badge">{_escape(policy)}</span>' for policy in policies)
+        if policies
+        else ""
+    )
+    badges_row = f'<div class="badges">{badges}</div>' if policies else ""
+    runs_word = "run" if len(task.runs) == 1 else "runs"
+    stats = (
+        f"{len(task.runs)} {runs_word} · success {success_fraction(task)} · "
+        f"mean score {_number(mean_score(task))}"
+    )
+    # Runs are newest first, so the first run with a page is the default tab.
+    first_enabled = next(
+        (index for index, run in enumerate(task.runs) if run.page is not None), None
+    )
+    default_page = None if first_enabled is None else task.runs[first_enabled].page
+    tabs = "".join(
+        _tab(index, run, active=index == first_enabled) for index, run in enumerate(task.runs)
+    )
+    frame_src = "" if default_page is None else f' src="{_escape(default_page)}"'
+    iframe = f'<iframe id="rollout-frame" title="rollout player"{frame_src}></iframe>'
+    refresh = ""
+    if refresh_seconds is not None:
+        # A full refresh resets the selected tab to the newest rollout at the
+        # selected interval; accepted over patching the iframe in place.
+        refresh = f'<meta http-equiv="refresh" content="{refresh_seconds}">\n'
+    return f"""<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+{refresh}<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{_escape(task.instruction)}</title>
+<style>{_STYLES}{_TASK_STYLES}</style>
+</head>
+<body>
+<header><div class="header-inner">
+  <a class="back" href="index.html">&larr; Task library</a>
+  <h1>{_escape(task.instruction)}</h1>
+  <div class="meta">{stats}</div>
+  {badges_row}
+</div></header>
+<main>
+  <div class="tabs">{tabs}</div>
+  <div class="frame-wrap">{iframe}</div>
+</main>
+<script>
+const frame = document.getElementById("rollout-frame");
+document.querySelectorAll("button.tab").forEach(tab => tab.addEventListener("click", () => {{
+  document.querySelectorAll("button.tab").forEach(
+    other => other.classList.toggle("active", other === tab)
+  );
+  frame.src = tab.dataset.src;
+}}));
+</script>
+</body>
+</html>
+"""

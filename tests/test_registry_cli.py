@@ -2324,6 +2324,10 @@ def test_view_directory_end_to_end_and_unreadable_log(
     assert "[1/3] rendering foreign.json" not in out.err
     assert "warning: could not read or render foreign.json" in out.err
     assert out.err.count(" rendering ") == 2
+    task_page = (html_dir / "task-pick-up-the-cube.html").read_text(encoding="utf-8")
+    assert 'data-src="older.html"' in task_page
+    assert 'href="index.html"' in task_page
+    assert (html_dir / "task-place-the-cube.html").is_file()
 
 
 def test_view_directory_includes_log_with_sanitized_null_metric(
@@ -2473,6 +2477,21 @@ def test_view_directory_incremental_mtime_and_force(
     assert "(2 logs, 2 pages, " in forced.out
 
 
+def test_view_directory_task_page_tabs_between_rollouts(tmp_path: Path) -> None:
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    _write_log(_directory_view_log(created="2026-07-29T12:00:00Z"), logs, "older.json")
+    _write_log(_directory_view_log(created="2026-07-30T12:00:00Z"), logs, "newer.json")
+
+    assert main(["view", str(logs)]) == 0
+
+    page = (logs / "html" / "task-pick-up-the-cube.html").read_text(encoding="utf-8")
+    assert page.count("data-src=") == 2
+    assert "Rollout 1" in page and "Rollout 2" in page
+    assert '<iframe id="rollout-frame" title="rollout player" src="newer.html">' in page
+    assert '<meta http-equiv="refresh"' not in page
+
+
 def test_view_directory_index_log_uses_collision_free_page(tmp_path: Path) -> None:
     logs = tmp_path / "logs"
     logs.mkdir()
@@ -2592,8 +2611,10 @@ def test_view_serve_initial_live_refresh_and_static_live_page_rules(
 
     index = (logs / "html" / "index.html").read_text(encoding="utf-8")
     page = (logs / "html" / "run.live.html").read_text(encoding="utf-8")
+    task_page = (logs / "html" / "task-pick-up-the-cube.html").read_text(encoding="utf-8")
     assert '<meta http-equiv="refresh" content="2">' in index
     assert '<meta http-equiv="refresh" content="2">' in page
+    assert '<meta http-equiv="refresh" content="2">' in task_page
     assert "RUNNING — refreshes every 2s" in page
     assert "pick up the cube" in index
 
@@ -2765,6 +2786,7 @@ def test_directory_atomic_live_stub_and_index_writes_and_quiet_progress(
         html_dir / "run.live.html",
         html_dir / "orphan.live.html",
         html_dir / "index.html",
+        html_dir / "task-pick-up-the-cube.html",
     }
     assert " rendering " not in capsys.readouterr().err
 

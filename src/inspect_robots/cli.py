@@ -2250,7 +2250,11 @@ def _render_view_directory(
 ) -> _DirectoryRenderResult:
     """Render one incremental logs-directory pass and return its output paths."""
     from inspect_robots import read_eval_log
-    from inspect_robots._library import group_library, render_library
+    from inspect_robots._library import (
+        group_library,
+        render_library,
+        render_task_page,
+    )
 
     if args.out == "-":
         raise SystemExit("-o - cannot be used with a logs directory; pass an output directory")
@@ -2363,6 +2367,11 @@ def _render_view_directory(
         render_library(tasks, loose=loose, refresh_seconds=refresh_seconds),
         index_path,
     )
+    for task in tasks:
+        bytes_written += _write_html_atomic(
+            render_task_page(task, refresh_seconds=refresh_seconds),
+            out_dir / f"task-{task.slug}.html",
+        )
     if not quiet:
         print(
             f"index: {index_path} "
