@@ -28,6 +28,8 @@ class IndexEntry:
     errored_trials: int
     termination: str
     error: str | None
+    # Whether any trial in the run ended with the "success" termination reason.
+    success: bool = False
 
 
 _STYLES = """

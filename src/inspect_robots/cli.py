@@ -2156,6 +2156,12 @@ def _index_termination(log: EvalLog) -> str:
 def _index_entry(log: EvalLog, log_path: Path, page: str) -> IndexEntry:
     """Build one directory-index row from a successfully parsed log."""
     model = log.eval.policy_config.get("model")
+    success = any(
+        reason == "success"
+        for scene in log.samples
+        for reason in scene.termination_reasons
+        if reason is not None
+    )
     return IndexEntry(
         name=log_path.name,
         page=page,
@@ -2169,6 +2175,7 @@ def _index_entry(log: EvalLog, log_path: Path, page: str) -> IndexEntry:
         errored_trials=log.results.errored_trials,
         termination=_index_termination(log),
         error=log.error,
+        success=success,
     )
 
 
