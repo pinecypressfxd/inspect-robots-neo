@@ -9,6 +9,11 @@ All notable changes to this project are documented here. The format is based on
 
 ### Added
 
+- **Plugins:** `inspect-robots-nero`, a real-hardware embodiment for the lab's
+  dual Nero CAN arms (EE-pose actions, pinocchio IK, D405 color cameras),
+  evaluated with any Inspect Robots policy, e.g. the `agent` policy on
+  GPT-6 Astra.
+
 - **Setup wizard:** embodiment plugins can declare bounded numeric settings,
   including optional `none`, through `NumberSlot` / `NUMBER_SLOTS`
   ([plan 0081](plans/0081-number-slots.md),

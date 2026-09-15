@@ -80,7 +80,7 @@ class instead of comparing names.
 
 ## First-party plugins
 
-Six plugins ship from the Inspect Robots repository as separate packages, covering policies,
+Seven plugins ship from the Inspect Robots repository as separate packages, covering policies,
 embodiments, and attended operator input:
 
 - [`inspect-robots-ros`](https://github.com/robocurve/inspect-robots/tree/main/plugins/inspect-robots-ros):
@@ -109,6 +109,10 @@ embodiments, and attended operator input:
   `run --speak`. Silence filtering protects the input path. Speech synthesis and
   playback always run on a worker, while blocking speech may wait boundedly on
   that work from the control thread.
+- [`inspect-robots-nero`](https://github.com/robocurve/inspect-robots/tree/main/plugins/inspect-robots-nero):
+  run attended evals on the lab's dual Nero CAN arms (pika grippers, D405 color
+  cameras, EE-pose actions with onboard IK) with any Inspect Robots policy
+  (`--embodiment nero`).
 
 ### `inspect-robots-isaacsim`: the body
 
