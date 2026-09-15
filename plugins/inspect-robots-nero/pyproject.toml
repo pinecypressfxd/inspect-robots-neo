@@ -1,0 +1,92 @@
+[build-system]
+requires = ["hatchling>=1.18", "hatch-fancy-pypi-readme>=24.1"]
+build-backend = "hatchling.build"
+
+[project]
+name = "inspect-robots-nero"
+version = "0.1.0"
+description = "Nero dual-arm embodiment for Inspect Robots: real CAN arms, pika grippers, and D405 cameras, evaluated with any Inspect Robots policy."
+dynamic = ["readme"]
+requires-python = ">=3.10"
+license = "MIT"
+authors = [{ name = "Inspect Robots contributors" }]
+keywords = ["robotics", "nero", "dual-arm", "vla", "policy", "inspect_robots", "evaluation"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Typing :: Typed",
+]
+# NOTE: `pyAgxArm` is intentionally NOT a dependency. It is the vendor SDK,
+# installed from the lab checkout (third_party/pyAgxArm). This adapter imports
+# it lazily and reports it through RUNTIME_REQUIREMENTS (see doctor/preflight).
+dependencies = [
+    "inspect-robots>=0.2",
+    "numpy>=1.24",
+    "opencv-python>=4.8",
+    "pin>=3.1",
+    "scipy>=1.11",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-cov>=5.0", "mypy>=1.11", "ruff>=0.6"]
+
+# Entry-point discovery: an installed inspect-robots-nero appears in
+# `inspect-robots list embodiments` without being imported first.
+[project.entry-points."inspect_robots.embodiments"]
+nero = "inspect_robots_nero:nero_embodiment"
+
+[project.urls]
+Homepage = "https://github.com/robocurve/inspect-robots/tree/main/plugins/inspect-robots-nero"
+Repository = "https://github.com/robocurve/inspect-robots"
+
+# In the Inspect Robots monorepo this resolves the `inspect_robots` dependency to the
+# in-repo core package instead of PyPI. Harmless in a standalone checkout.
+[tool.uv.sources]
+inspect-robots = { workspace = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/inspect_robots_nero"]
+
+[tool.hatch.build.targets.sdist]
+include = ["src/inspect_robots_nero", "tests", "README.md"]
+
+[tool.ruff]
+extend = "../../pyproject.toml"
+
+[tool.ruff.lint.isort]
+known-first-party = ["inspect_robots", "inspect_robots_nero"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["D1"]
+
+[tool.mypy]
+strict = true
+
+# The vendor SDK and pinocchio are optional/hardware-side imports; the adapter
+# isolates them behind lazily imported modules and fakes in tests.
+[[tool.mypy.overrides]]
+module = ["pyAgxArm.*", "pinocchio.*"]
+ignore_missing_imports = true
+
+# PyPI readme: identical to README.md except GitHub-only alert syntax
+# (e.g. `> [!NOTE]`) is rewritten to bold blockquotes, which PyPI renders.
+[tool.hatch.metadata.hooks.fancy-pypi-readme]
+content-type = "text/markdown"
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.fragments]]
+path = "README.md"
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.substitutions]]
+pattern = '(?m)^> \[!NOTE\][ \t]*$'
+replacement = '> **Note:**'
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.substitutions]]
+pattern = '(?m)^> \[!WARNING\][ \t]*$'
+replacement = '> **Warning:**'
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.substitutions]]
+pattern = '(?m)^> \[!CAUTION\][ \t]*$'
+replacement = '> **Caution:**'
