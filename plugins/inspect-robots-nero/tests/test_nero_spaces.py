@@ -76,11 +76,3 @@ def test_invalid_camera_override_device() -> None:
 def test_invalid_workspace_bounds() -> None:
     with pytest.raises(ValueError, match="workspace"):
         nero_embodiment(workspace_high=(1.0, 1.0))  # wrong length
-
-
-def test_reset_and_step_are_not_wired_yet() -> None:
-    from inspect_robots import Scene
-
-    embodiment = nero_embodiment()
-    with pytest.raises(NotImplementedError):
-        embodiment.reset(Scene(id="s0", instruction="x"))
