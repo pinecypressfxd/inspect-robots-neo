@@ -65,10 +65,11 @@ known-first-party = ["inspect_robots", "inspect_robots_nero"]
 [tool.mypy]
 strict = true
 
-# The vendor SDK and pinocchio are optional/hardware-side imports; the adapter
-# isolates them behind lazily imported modules and fakes in tests.
+# The vendor SDK, pinocchio, and scipy's transform module are optional or
+# untyped upstream imports; the adapter isolates them behind lazily imported
+# modules and fakes in tests.
 [[tool.mypy.overrides]]
-module = ["pyAgxArm.*", "pinocchio.*"]
+module = ["pyAgxArm.*", "pinocchio.*", "scipy.spatial.transform.*"]
 ignore_missing_imports = true
 
 # PyPI readme: identical to README.md except GitHub-only alert syntax

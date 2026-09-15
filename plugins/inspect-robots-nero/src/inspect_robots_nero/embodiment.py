@@ -8,9 +8,10 @@ one bounded joint increment per arm at ``control_hz``.
 
 from __future__ import annotations
 
+import importlib.resources
 import math
 import time
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from typing import Any, cast
 
 import numpy as np
@@ -45,22 +46,17 @@ from inspect_robots_nero._config import (
     ROT6D_BOUNDS,
 )
 
-# Provisional workspace box per arm until Task 4 derives it from FK sampling.
-_PROVISIONAL_WORKSPACE: dict[str, tuple[tuple[float, float, float], tuple[float, float, float]]] = {
-    "left": ((-0.10, -0.70, -0.05), (1.10, 0.70, 1.00)),
-    "right": ((-0.10, -0.70, -0.05), (1.10, 0.70, 1.00)),
-}
-
 ArmFactory = Callable[[str], Any]
 CameraFactory = Callable[[str], Any]
 
 
-def _bounds_for(side: str) -> tuple[list[float], list[float]]:
-    low, high = _PROVISIONAL_WORKSPACE[side]
+def _bounds_for(
+    workspace_low: Sequence[float], workspace_high: Sequence[float]
+) -> tuple[list[float], list[float]]:
     rot_low, rot_high = ROT6D_BOUNDS
     return (
-        [*low, *[rot_low] * 6, GRIPPER_WIDTH_MIN_M],
-        [*high, *[rot_high] * 6, GRIPPER_WIDTH_MAX_M],
+        [*workspace_low, *[rot_low] * 6, GRIPPER_WIDTH_MIN_M],
+        [*workspace_high, *[rot_high] * 6, GRIPPER_WIDTH_MAX_M],
     )
 
 
@@ -104,17 +100,20 @@ class NeroEmbodiment(EmbodimentBase):
         ):
             raise ValueError(f"max_step must hold {ACTION_DIM} finite positive entries (or None)")
 
+        # Default workspace bounds come from FK sampling over the packaged URDF;
+        # explicit workspace_low/workspace_high replace them for both arms alike.
+        sampled: dict[str, tuple[tuple[float, float, float], tuple[float, float, float]]] = {}
+        if workspace_low is None or workspace_high is None:
+            from inspect_robots_nero._kinematics import NeroKinematics
+
+            urdf_path = (
+                importlib.resources.files("inspect_robots_nero") / "assets" / "dual_nero_pika.urdf"
+            )
+            sampled = NeroKinematics(str(urdf_path)).sample_workspace_bounds()
+        workspace: dict[str, tuple[list[float], list[float]]] = {}
         for side in ("left", "right"):
-            low = (
-                list(_PROVISIONAL_WORKSPACE[side][0])
-                if workspace_low is None
-                else list(workspace_low)
-            )
-            high = (
-                list(_PROVISIONAL_WORKSPACE[side][1])
-                if workspace_high is None
-                else list(workspace_high)
-            )
+            low = list(workspace_low) if workspace_low is not None else list(sampled[side][0])
+            high = list(workspace_high) if workspace_high is not None else list(sampled[side][1])
             if len(low) != 3 or len(high) != 3 or not all(math.isfinite(v) for v in (*low, *high)):
                 raise ValueError(
                     f"workspace_low/workspace_high must hold three finite values per axis; "
@@ -124,6 +123,7 @@ class NeroEmbodiment(EmbodimentBase):
                 raise ValueError(
                     f"workspace bounds must be elementwise low <= high for the {side} arm"
                 )
+            workspace[side] = (low, high)
 
         resolved_cameras = dict(CAMERA_DEFAULTS)
         if cameras is not None:
@@ -140,8 +140,14 @@ class NeroEmbodiment(EmbodimentBase):
                     )
                 resolved_cameras[camera_name] = {**CAMERA_DEFAULTS[camera_name], "device": device}
 
-        low_array = np.asarray(_bounds_for("left")[0] + _bounds_for("right")[0], dtype=np.float64)
-        high_array = np.asarray(_bounds_for("left")[1] + _bounds_for("right")[1], dtype=np.float64)
+        low_array = np.asarray(
+            _bounds_for(*workspace["left"])[0] + _bounds_for(*workspace["right"])[0],
+            dtype=np.float64,
+        )
+        high_array = np.asarray(
+            _bounds_for(*workspace["left"])[1] + _bounds_for(*workspace["right"])[1],
+            dtype=np.float64,
+        )
         semantics = ActionSemantics(
             control_mode="eef_abs_pose",
             rotation_repr="rot6d",
