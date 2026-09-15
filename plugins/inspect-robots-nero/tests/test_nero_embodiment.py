@@ -3,18 +3,19 @@
 from __future__ import annotations
 
 import importlib.resources
-from types import SimpleNamespace
+from typing import cast
 
 import numpy as np
 import pytest
 
-from inspect_robots import Scene
+from inspect_robots import Action, Scene
 from inspect_robots.conformance import assert_embodiment_conformant
 from inspect_robots.errors import EmbodimentFault
 from inspect_robots_nero import nero_embodiment
 from inspect_robots_nero._arm import NeroArm
 from inspect_robots_nero._config import GRIPPER_FORCE, GRIPPER_INIT_WIDTH_M, HOME_LEFT, HOME_RIGHT
 from inspect_robots_nero._kinematics import NeroKinematics, matrix_to_rot6d
+from inspect_robots_nero.embodiment import CameraFactory
 
 from .fakes import FakeAgxRobot
 
@@ -126,7 +127,7 @@ def test_step_commands_bounded_joint_deltas_and_gripper_widths() -> None:
     harness = Harness()
     harness.embodiment.reset(Scene(id="s0", instruction="x"))
     action = _home_action(GRIPPER_INIT_WIDTH_M, 0.02)
-    result = harness.embodiment.step(SimpleNamespace(data=action, meta={}))
+    result = harness.embodiment.step(Action(data=action))
     for robot in harness.robots.values():
         assert len(robot.move_js_calls) == 2  # home, then one step command
     assert result.observation.images["left_rgbd"].shape == (480, 640, 3)
@@ -137,9 +138,9 @@ def test_step_paces_itself_to_control_hz() -> None:
     harness.embodiment.reset(Scene(id="s0", instruction="x"))
     action = _home_action(0.04, 0.04)
     baseline = len(harness.sleeps)
-    harness.embodiment.step(SimpleNamespace(data=action, meta={}))
+    harness.embodiment.step(Action(data=action))
     first = len(harness.sleeps)
-    harness.embodiment.step(SimpleNamespace(data=action, meta={}))
+    harness.embodiment.step(Action(data=action))
     assert first > baseline  # the first step slept to honor the cadence after reset
     assert len(harness.sleeps) > first  # the second step slept again
 
@@ -148,7 +149,7 @@ def test_action_shape_mismatch_is_rejected() -> None:
     harness = Harness()
     harness.embodiment.reset(Scene(id="s0", instruction="x"))
     with pytest.raises(ValueError, match="shape"):
-        harness.embodiment.step(SimpleNamespace(data=np.zeros(6), meta={}))
+        harness.embodiment.step(Action(data=np.zeros(6)))
 
 
 def test_unreachable_action_raises_embodiment_fault() -> None:
@@ -157,14 +158,14 @@ def test_unreachable_action_raises_embodiment_fault() -> None:
     far = _home_action(GRIPPER_INIT_WIDTH_M, GRIPPER_INIT_WIDTH_M)
     far[0] = 50.0  # five meters past any reachable pose
     with pytest.raises(EmbodimentFault):
-        harness.embodiment.step(SimpleNamespace(data=far, meta={}))
+        harness.embodiment.step(Action(data=far))
 
 
 def test_gripper_force_is_the_configured_constant() -> None:
     harness = Harness()
     harness.embodiment.reset(Scene(id="s0", instruction="x"))
     action = _home_action(0.03, GRIPPER_INIT_WIDTH_M)
-    harness.embodiment.step(SimpleNamespace(data=action, meta={}))
+    harness.embodiment.step(Action(data=action))
     # The left gripper effector recorded (width, force); the fake stores moves.
     left_arm = harness.embodiment._arms["left"]
     assert left_arm.raw_robot.effector_kind == "AGX_GRIPPER"
@@ -182,6 +183,60 @@ def test_close_disables_arms_and_stops_cameras() -> None:
         assert not robot.enabled
     for camera in harness.cameras.values():
         assert camera.stopped
+
+
+def test_step_clamps_per_tick_joint_delta() -> None:
+    harness = Harness()
+    harness.embodiment.reset(Scene(id="s0", instruction="x"))
+    pre = {side: np.asarray(robot.angles) for side, robot in harness.robots.items()}
+    # +0.15 m along +x stays inside the sampled workspace and converges from the
+    # home seed; the raw IK solution moves the left arm 0.54 rad, well past the
+    # 0.1 rad per-tick clamp, so the clipped path is genuinely exercised.
+    action = _home_action(GRIPPER_INIT_WIDTH_M, GRIPPER_INIT_WIDTH_M)
+    action[0] += 0.15
+    harness.embodiment.step(Action(data=action))
+    for side in ("left", "right"):
+        commanded = np.asarray(harness.robots[side].move_js_calls[-1])
+        assert float(np.max(np.abs(commanded - pre[side]))) <= 0.1 + 1e-9
+    left_commanded = np.asarray(harness.robots["left"].move_js_calls[-1])
+    assert float(np.max(np.abs(left_commanded - pre["left"]))) > 0.02
+
+
+def _failing_camera_harness() -> tuple[Harness, CameraFactory]:
+    """A harness whose camera factory blows up on the second camera (right_rgbd)."""
+    harness = Harness()
+    working = harness.embodiment._camera_factory
+
+    def failing(name: str) -> FakeCamera:
+        if name == "right_rgbd":
+            raise RuntimeError(f"camera {name} is busy")
+        return cast(FakeCamera, working(name))
+
+    harness.embodiment._camera_factory = failing
+    return harness, working
+
+
+def test_partial_bring_up_failure_tears_down_and_raises_fault() -> None:
+    harness, _working = _failing_camera_harness()
+    with pytest.raises(EmbodimentFault, match="bring-up failed"):
+        harness.embodiment.reset(Scene(id="s0", instruction="x"))
+    for robot in harness.robots.values():
+        assert not robot.enabled
+        assert robot.disconnected
+    assert harness.cameras["left_rgbd"].started and harness.cameras["left_rgbd"].stopped
+    # Bring-up is incremental: the third camera was never built or started.
+    assert not harness.cameras["chest_rgbd"].started
+
+
+def test_bring_up_retry_after_failure_reenables_the_robots() -> None:
+    harness, working = _failing_camera_harness()
+    with pytest.raises(EmbodimentFault, match="bring-up failed"):
+        harness.embodiment.reset(Scene(id="s0", instruction="x"))
+    harness.embodiment._camera_factory = working  # restore the working factory
+    observation = harness.embodiment.reset(Scene(id="s0", instruction="x"))
+    for robot in harness.robots.values():
+        assert robot.enabled and robot.connected
+    assert observation.state["joint_pos"].shape == (16,)
 
 
 def test_conformance_still_passes_when_wired() -> None:

@@ -239,23 +239,54 @@ class NeroEmbodiment(EmbodimentBase):
         )
         from inspect_robots_nero._kinematics import NeroKinematics
 
-        self._arms = {side: self._arm_factory(side) for side in ("left", "right")}
-        for arm in self._arms.values():
-            arm.enable()
-            arm.set_speed_percent(SPEED_PERCENT)
-            arm.set_normal_mode()
-        self._grippers = {side: NeroGripper(self._arms[side]) for side in ("left", "right")}
-        for gripper in self._grippers.values():
-            gripper.start()
-            gripper.move(GRIPPER_INIT_WIDTH_M, GRIPPER_FORCE)
-        self._cameras = {name: self._camera_factory(name) for name in self.cameras}
-        urdf = importlib.resources.files("inspect_robots_nero") / "assets" / "dual_nero_pika.urdf"
-        self._kinematics = NeroKinematics(str(urdf))
-        self._last_commanded = {"left": np.asarray(HOME_LEFT), "right": np.asarray(HOME_RIGHT)}
+        # Build incrementally, storing each object as it is created: a factory
+        # that aborts mid-bring-up still leaves the built half reachable for
+        # teardown, so a retry never stacks a second arm pair on the CAN bus.
+        try:
+            for side in ("left", "right"):
+                self._arms[side] = self._arm_factory(side)
+            for arm in self._arms.values():
+                arm.enable()
+                arm.set_speed_percent(SPEED_PERCENT)
+                arm.set_normal_mode()
+            for side in ("left", "right"):
+                gripper = NeroGripper(self._arms[side], sleep=self._sleep)
+                self._grippers[side] = gripper
+                gripper.start()
+                gripper.move(GRIPPER_INIT_WIDTH_M, GRIPPER_FORCE)
+            for name in self.cameras:
+                self._cameras[name] = self._camera_factory(name)
+            urdf = (
+                importlib.resources.files("inspect_robots_nero") / "assets" / "dual_nero_pika.urdf"
+            )
+            self._kinematics = NeroKinematics(str(urdf))
+            self._last_commanded = {
+                "left": np.asarray(HOME_LEFT),
+                "right": np.asarray(HOME_RIGHT),
+            }
+        except Exception as exc:
+            self._abort_bring_up()
+            raise EmbodimentFault(f"nero bring-up failed: {exc}") from exc
         self._connected = True
 
+    def _abort_bring_up(self) -> None:
+        """Tear down a partially built hardware set after a failed bring-up."""
+        for camera in self._cameras.values():
+            with contextlib.suppress(Exception):
+                camera.stop()
+        for gripper in self._grippers.values():
+            with contextlib.suppress(Exception):
+                gripper.stop()
+        for arm in self._arms.values():
+            with contextlib.suppress(Exception):
+                arm.disable()
+                arm.close()
+        self._arms = {}
+        self._grippers = {}
+        self._cameras = {}
+
     def _drive_home(self) -> None:
-        from inspect_robots_nero._config import HOME_LEFT, HOME_RIGHT
+        from inspect_robots_nero._config import HOME_LEFT, HOME_RIGHT, RESET_SETTLE_TOL_RAD
 
         homes = {"left": np.asarray(HOME_LEFT), "right": np.asarray(HOME_RIGHT)}
         for side, home in homes.items():
@@ -268,7 +299,7 @@ class NeroEmbodiment(EmbodimentBase):
                 if reading is None or len(reading) != 7:
                     settled = False
                     break
-                if float(np.max(np.abs(np.asarray(reading) - home))) > 0.05:
+                if float(np.max(np.abs(np.asarray(reading) - home))) > RESET_SETTLE_TOL_RAD:
                     settled = False
                     break
             if settled:

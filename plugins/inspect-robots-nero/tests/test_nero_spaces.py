@@ -35,6 +35,7 @@ def test_action_bounds_are_finite_and_ordered() -> None:
 
 def test_observation_space_declares_agent_required_fields() -> None:
     space = nero_embodiment().info.observation_space
+    assert space.state is not None
     by_key = {field.key: field for field in space.state.fields}
     assert by_key["eef_state"].shape == (ACTION_DIM,)
     assert by_key["joint_pos"].shape == (16,)
