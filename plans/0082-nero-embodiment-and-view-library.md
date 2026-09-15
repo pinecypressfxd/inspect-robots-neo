@@ -41,13 +41,13 @@ plugins/inspect-robots-nero/
   tests/                        # stub arm/gripper/camera fixtures, no hardware
 ```
 
-Dependencies: `inspect-robots`, `numpy`, `pinocchio` (`pin`), `proxsuite`,
+Dependencies: `inspect-robots`, `numpy`, `opencv-python`, `pinocchio` (`pin`),
 `scipy` (all lazily imported at module level of the hardware/kinematics modules
-so `import inspect_robots_nero` stays cheap and testable). `pyagxarm` and
-`pyrealsense2` stay optional extras documented in the README (installed from the
-vendor checkout / pip); tests always run against stubs. Same workspace,
-ruff/mypy-strict, per-plugin-test conventions as the other plugins; never
-counts toward the core coverage gate.
+so `import inspect_robots_nero` stays cheap and testable). `pyagxarm` stays an
+optional extra documented in the README (installed from the vendor checkout);
+tests always run against stubs. Same workspace, ruff/mypy-strict,
+per-plugin-test conventions as the other plugins; never counts toward the core
+coverage gate.
 
 ### Spaces (the agent plugin's contract drives these)
 
@@ -93,10 +93,14 @@ logic is deliberately not ported. `capabilities={SELF_PACED, RESETTABLE}`.
   `read_state() -> joints`.
 - `_gripper.NeroGripper`: width command (0 to 0.09 m, force 0.3) and width
   readback per arm via the SDK's gripper API.
-- `_camera.D405Camera`: `pyrealsense2` color pipeline per serial (defaults:
-  left `313123070536`, right `313123070105`, chest `313123070158`, all
-  overridable), 640x480 at 30 fps, one daemon thread keeping the latest frame
-  with a monotonic stamp. `reset()`/`step()` read the latest frame and reject
+- `_camera.D405Camera`: OpenCV V4L2 capture per camera, exactly like the
+  proven bring-up (the neo stack reads the D405 color stream over V4L2 mmap,
+  not pyrealsense2): `color_device` by-path node (defaults left
+  `pci-0000:80:14.0-usb-0:11.2:1.0-video-index4`, right
+  `pci-0000:80:14.0-usb-0:2.2:1.0-video-index4`, chest
+  `pci-0000:00:0d.0-usb-0:2.2:1.0-video-index4`, all overridable), YUYV,
+  640x480 at 30 fps, one daemon thread keeping the latest frame with a
+  monotonic stamp. `reset()`/`step()` read the latest frame and reject
   stale frames past a timeout, following the ros plugin's staleness pattern.
   Cross-camera alignment is not reproduced in v1; the known millisecond-scale
   skew is documented in the README.
@@ -106,11 +110,13 @@ logic is deliberately not ported. `capabilities={SELF_PACED, RESETTABLE}`.
 `_kinematics.py` ports the working solver's core as a small class:
 pinocchio model from the packaged dual URDF, per-arm forward kinematics and
 Jacobian at `*_gripper_flange` with the TCP transform (translation
-`[0, 0, 0.18]`, rpy `[0, -pi/2, 0]`), ProxQP iteration (damped least squares
-fallback when `proxsuite` is absent, matching the source solver's optional
-import) seeded from the current joint angles, tolerances 1e-3 m / 1e-3 rad,
-per-iteration joint step cap 0.1 rad. rot6d to rotation matrix conversion
-lives here. All constants are constructor-overridable.
+`[0, 0, 0.18]`, rpy `[0, -pi/2, 0]`), damped least squares iteration with
+posture regularization seeded from the current joint angles, tolerances
+1e-3 m / 1e-3 rad, per-iteration joint step cap 0.1 rad. The source solver's
+ProxQP formulation stays with the neo controller: the embodiment clamps the
+per-tick joint delta itself, so per-iteration QP limits would be redundant
+here. rot6d to rotation matrix conversion lives here. All constants are
+constructor-overridable.
 
 ### reset, step, close, and safety
 
@@ -131,7 +137,7 @@ lives here. All constants are constructor-overridable.
   first unsupervised runs should also lower `-P max_speed_frac` (documented in
   the README with the safety warning block).
 - Constructor validation messages follow the ros plugin style: finiteness,
-  bound consistency, serial presence, with `-E`/`-P` fix hints.
+  bound consistency, device-node presence, with `-E`/`-P` fix hints.
 
 ### Policy integration (no code)
 
