@@ -230,6 +230,7 @@ class NeroEmbodiment(EmbodimentBase):
         self._clock = clock
         self._sleep = sleep
         self._instruction: str | None = None
+        self._operator_session: Any | None = None
         self._arm_factory = arm_factory or self._default_arm_factory
         self._camera_factory = camera_factory or self._default_camera_factory
         self._arms: dict[str, Any] = {}
@@ -378,14 +379,34 @@ class NeroEmbodiment(EmbodimentBase):
                 self._sleep(remaining)
         self._last_step_time = self._clock()
 
+    def connect_operator_session(self, session: Any) -> None:
+        """Stand down from stdin ownership: the framework console owns it for this run.
+
+        After this call the embodiment never reads stdin or prints its own
+        output; the reset confirmation routes through the session's gate. The
+        hook never fires under --no-prompt, without a TTY, or from direct
+        rollout()/eval() calls, so reset keeps the input() fallback.
+        """
+        self._operator_session = session
+
+    def _confirm_operator_reset(self, instruction: str) -> None:
+        """Block until the operator confirms the arranged scene."""
+        if self._operator_session is not None:
+            self._operator_session.write_line(
+                f"Operator reset required for instruction: {instruction}"
+            )
+            self._operator_session.gate(f"Arrange the scene, instruction: {instruction}")
+            return
+        print(f"Operator reset required for instruction: {instruction}")
+        input("Arrange the scene, then press Enter to continue: ")
+
     def reset(self, scene: Scene, *, seed: int | None = None) -> Observation:
         """Connect lazily, settle both arms at home, and return the first observation."""
         del seed
         self._instruction = scene.instruction
         self._ensure_connected()
         if self.operator_reset_confirm:
-            print(f"Operator reset required for instruction: {scene.instruction}")
-            input("Arrange the scene, then press Enter to continue: ")
+            self._confirm_operator_reset(scene.instruction)
         self._drive_home()
         # Reset counts as the previous control tick so the first step paces itself.
         self._last_step_time = self._clock()

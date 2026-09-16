@@ -123,6 +123,41 @@ def test_reset_confirm_prompts_when_enabled(monkeypatch: pytest.MonkeyPatch) -> 
     assert prompts and "Arrange the scene" in prompts[0]
 
 
+def test_connected_session_owns_the_reset_confirm(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    inputs: list[str] = []
+
+    def no_input(prompt: str) -> str:
+        inputs.append(prompt)
+        return ""
+
+    monkeypatch.setattr("builtins.input", no_input)
+
+    class FakeSession:
+        def __init__(self) -> None:
+            self.gates: list[str] = []
+            self.lines: list[str] = []
+
+        def status(self, line: str | None) -> None:
+            pass
+
+        def write_line(self, text: str) -> None:
+            self.lines.append(text)
+
+        def gate(self, prompt: str, *, hint: str | None = None) -> None:
+            self.gates.append(prompt)
+
+    session = FakeSession()
+    harness = Harness(operator_reset_confirm=True)
+    harness.embodiment.connect_operator_session(session)
+    harness.embodiment.reset(Scene(id="s0", instruction="put the cup down"))
+    assert not inputs  # the session owns stdin; the embodiment never reads it
+    assert session.gates == ["Arrange the scene, instruction: put the cup down"]
+    assert any("put the cup down" in line for line in session.lines)
+    assert capsys.readouterr().out == ""  # stand-down: no own printing either
+
+
 def test_step_commands_bounded_joint_deltas_and_gripper_widths() -> None:
     harness = Harness()
     harness.embodiment.reset(Scene(id="s0", instruction="x"))
