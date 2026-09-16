@@ -39,9 +39,14 @@ class FakeAgxRobot:
         self.connected = False
         self.disconnected = False
         self.enabled = False
+        self.enable_result = True
         self.speed: int | None = None
         self.mode: str | None = None
         self.move_js_calls: list[tuple[float, ...]] = []
+        self.move_j_calls: list[tuple[float, ...]] = []
+        # None: derive the per-joint enable flags from `enabled`; a list lets
+        # tests script joints that lag behind (or never confirm) a disable.
+        self.joints_enable: list[bool] | None = None
         self.angles: tuple[float, ...] = (0.1, 0.2, 0.0, 0.5, 0.0, 0.0, 0.3)
         self.effector_kind: str | None = None
         self.OPTIONS = SimpleNamespace(EFFECTOR=SimpleNamespace(AGX_GRIPPER="AGX_GRIPPER"))
@@ -53,8 +58,8 @@ class FakeAgxRobot:
         self.disconnected = True
 
     def enable(self) -> bool:
-        self.enabled = True
-        return True
+        self.enabled = self.enable_result
+        return self.enable_result
 
     def disable(self) -> bool:
         self.enabled = False
@@ -65,6 +70,19 @@ class FakeAgxRobot:
 
     def set_follower_mode(self) -> None:
         self.mode = "follower"
+
+    def set_normal_mode(self) -> None:
+        self.mode = "normal"
+
+    def move_j(self, joints: list[float]) -> None:
+        self.move_j_calls.append(tuple(float(value) for value in joints))
+        # A firmware-smoothed move lands on its target: adopt it as readback.
+        self.angles = tuple(float(value) for value in joints)
+
+    def get_joints_enable_status_list(self) -> list[bool]:
+        if self.joints_enable is not None:
+            return list(self.joints_enable)
+        return [self.enabled] * 7
 
     def move_js(self, joints: list[float]) -> None:
         self.move_js_calls.append(tuple(float(value) for value in joints))

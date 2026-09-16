@@ -53,6 +53,26 @@ On reset the run prompts to arrange the scene, then drives both arms to their
 home positions before the first observation. End an episode with Esc; the
 default operator grader asks for the verdict.
 
+## Operator tools
+
+Two standalone commands cover power-on and power-off, mirroring the bring-up
+checkout's `test_move_j.py --stage move_j` and `disable_arms.py`. After the
+arms are powered on, home both:
+
+    python scripts/arm_tools.py home [--arm left|right|both] [--wait 2.0]
+
+The command enables each arm (failing loudly if an enable is refused),
+switches to the firmware position mode, and issues one `move_j` to the config
+home pose per arm. To drop the arms limp immediately:
+
+    python scripts/arm_tools.py disable --arm both --yes
+
+Without `--yes` it only warns and exits 2 (`Arms will go limp`). With it, it
+disables and polls the per-joint enable flags until every joint reports limp
+or `--timeout` (default 5 s) expires; a timeout exits 1. For
+operator-confirmed incremental `move_js` steps on one arm, use
+`scripts/bench_smoke.py`.
+
 ## Camera overrides
 
     -E cameras=left_rgbd=/dev/v4l/by-path/pci-0000:80:14.0-usb-0:11.2:1.0-video-index4

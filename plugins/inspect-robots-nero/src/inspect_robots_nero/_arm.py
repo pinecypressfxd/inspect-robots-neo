@@ -97,6 +97,28 @@ class NeroArm:
         else:
             self._robot.set_normal_mode()
 
+    def set_position_mode(self) -> None:
+        """Switch to the firmware normal mode that ``move_j`` trajectories expect."""
+        assert self._robot is not None, "connect() before set_position_mode()"
+        self._robot.set_normal_mode()
+
+    def move_j(self, joints: Sequence[float]) -> None:
+        """Command one firmware-smoothed joint move (requires position mode)."""
+        assert self._robot is not None, "connect() before move_j()"
+        self._robot.move_j([float(value) for value in joints])
+
+    def enable_status(self) -> list[bool] | None:
+        """Per-joint enable flags (7 bools), or None without feedback."""
+        if self._robot is None or not self._connected:
+            return None
+        status = self._robot.get_joints_enable_status_list()
+        if status is None:
+            return None
+        values = list(status)
+        if len(values) != 7 or not all(isinstance(value, bool) for value in values):
+            raise ValueError(f"enable status must hold 7 bools, got {values!r}")
+        return values
+
     def move_js(self, joints: Sequence[float]) -> None:
         """Stream one follower-mode joint target (no firmware smoothing)."""
         assert self._robot is not None, "connect() before move_js()"

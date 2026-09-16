@@ -107,3 +107,33 @@ def test_gripper_start_requires_connected_arm() -> None:
     gripper = NeroGripper(_arm(FakeAgxRobot()))
     with pytest.raises(RuntimeError, match="connected"):
         gripper.start()
+
+
+def test_move_j_and_position_mode_wrap_the_vendor_calls() -> None:
+    robot = FakeAgxRobot()
+    arm = _arm(robot)
+    arm.connect()
+    arm.set_position_mode()
+    arm.move_j([1, 2, 3, 4, 5, 6, 7])
+    assert robot.mode == "normal"
+    assert robot.move_j_calls == [(1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0)]
+
+
+def test_enable_status_reports_seven_bools_or_none() -> None:
+    robot = FakeAgxRobot()
+    arm = _arm(robot)
+    assert arm.enable_status() is None  # not connected yet
+    arm.connect()
+    arm.enable()
+    assert arm.enable_status() == [True] * 7
+    arm.disable()
+    assert arm.enable_status() == [False] * 7
+
+
+def test_enable_status_rejects_malformed_vendor_feedback() -> None:
+    robot = FakeAgxRobot()
+    arm = _arm(robot)
+    arm.connect()
+    robot.joints_enable = [True, True]  # wrong length
+    with pytest.raises(ValueError, match="7 bools"):
+        arm.enable_status()
