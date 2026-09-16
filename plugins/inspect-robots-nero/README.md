@@ -132,3 +132,61 @@ Cross-camera frame alignment is not reproduced in this adapter; v1 accepts the
 millisecond-scale skew between the three streams (the bring-up stack's
 alignment gate is not part of this plugin). Frames older than
 `-E camera_max_age_s` (default 0.5) are rejected loudly.
+
+## Mission console
+
+`scripts/mission_console.py` is a stdlib-only operator console for attended
+nero runs: three live camera tiles on top, a status line, an instruction form
+with a two-step start, stop and verdict buttons, and a link to the running
+history viewer. Run it from the repo root:
+
+    python scripts/mission_console.py [--port 8400] [--host 127.0.0.1] \
+        [--camera NAME=DEVICE ...] [--max-speed-frac 0.05] \
+        [--model gpt-6-astra] [--base-url URL] [--api-key-env EXPLABS_API_KEY] \
+        [--history-url http://127.0.0.1:8300/] [--log-dir /tmp]
+
+`--camera` takes the embodiment's `name=device` form (repeatable) and only
+overrides that camera's device node. Start spawns, on a pty:
+
+    uv run --no-sync inspect-robots "<instruction>" --policy agent \
+        -P model=gpt-6-astra -P base_url=https://api.experientiallabs.ai/v1 \
+        -P api_key_env=EXPLABS_API_KEY -P max_speed_frac=0.05 \
+        --embodiment nero -E operator_reset_confirm=False
+
+The child inherits the console's environment, so export `EXPLABS_API_KEY` in
+the shell that launches the console. Its terminal output is captured to a
+bounded in-memory tail plus a file under `--log-dir` (default `/tmp`), and the
+run's eval log path is detected from the process's `log:` line, falling back
+to the newest `logs/*.live.json` written after the run started. The JSON API
+(`GET /api/status`, `POST /api/start` `/api/stop` `/api/verdict`) drives the
+same controls the page offers.
+
+Safety and semantics:
+
+- Start is two-step on the page: the first click only arms the button, the
+  second (labeled with an explicit arms-will-move warning) actually posts.
+  The server separately rejects an empty instruction and any start while a
+  run is active. This web confirm replaces the terminal reset gate, which is
+  why the spawned run passes `-E operator_reset_confirm=False`.
+- The console binds 127.0.0.1 by default. A non-loopback `--host` prints a
+  loud warning: anyone who can reach the page can start the arms.
+- Camera exclusivity: the tiles hold the three V4L2 nodes while streaming,
+  and V4L2 mmap streaming is exclusive per node. The console releases the
+  cameras when a run starts so the spawned eval can claim them (tiles go dark
+  during a run and reconnect when it ends); a tile requested while a run
+  holds the devices answers a plain 503, and so does a dead or busy camera.
+  An eval started outside the console while tiles are live fails to open the
+  cameras: stop the console first. During a run, watch the History link
+  instead (`inspect-robots view logs --serve`), which renders the run's
+  `.live.json` snapshots live.
+- Stop and verdicts are graceful: the buttons write the `/stop` and `/y`,
+  `/n`, `/p` (or `/skip`) console lines to the run's terminal, which is the
+  only control channel, and every write is echoed on the console's stdout.
+  The child process is never signalled or killed; it ends by itself (process
+  exit, any code, marks the run ended in `/api/status`), and closing the
+  console sends one final `/stop` before the terminal closes.
+
+Manual checklist before first hardware use: all three camera tiles show live
+video; a start round-trip (arm, confirm, the status line flips to running);
+Stop ends the episode; a verdict button resolves the verdict prompt; the
+ended state shows the exit code and log path.
