@@ -134,13 +134,20 @@ class NeroArm:
         self._robot.move_js([float(value) for value in joints])
 
     def read_state(self) -> tuple[float, ...] | None:
-        """Latest joint angles, or None when the vendor returns nothing."""
+        """Latest joint angles, or None when the vendor returns nothing.
+
+        The vendor returns ``MessageAbstract[list[float]] | None``; the
+        payload lives behind its ``.msg`` property.
+        """
         if self._robot is None or not self._connected:
             return None
-        angles = self._robot.get_joint_angles()
-        if angles is None:
+        feedback = self._robot.get_joint_angles()
+        if feedback is None:
             return None
-        return tuple(float(value) for value in angles)
+        values = getattr(feedback, "msg", feedback)
+        if values is None:
+            return None
+        return tuple(float(value) for value in values)
 
     def close(self) -> None:
         """Disconnect from CAN; safe to call once."""

@@ -90,8 +90,12 @@ class FakeAgxRobot:
         # polls read_state() until the arm reports the commanded pose.
         self.angles = tuple(float(value) for value in joints)
 
-    def get_joint_angles(self) -> tuple[float, ...]:
-        return self.angles
+    def get_joint_angles(self) -> SimpleNamespace | None:
+        # The real SDK wraps the payload: MessageAbstract[list[float]] | None,
+        # angles reachable via the `.msg` property.
+        if self.angles is None:
+            return None
+        return SimpleNamespace(msg=list(self.angles))
 
     def init_effector(self, kind: str) -> FakeEffector:
         self.effector_kind = kind
