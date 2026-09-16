@@ -182,6 +182,26 @@ def test_render_wire_replay_skips_missing_blobs_and_degrades_foreign_rows(
     assert "scene-2-e0" not in document
 
 
+def test_render_wire_replay_escapes_hostile_header_values(tmp_path: Path) -> None:
+    """Hostile call/attempt strings render escaped, never as live markup."""
+    capture = _capture(tmp_path)
+    hostile: dict[str, Any] = {
+        "call": "</script><script>alert(1)</script>",
+        "attempt": '<img src=x onerror="alert(2)">',
+        "request": {},
+        "response": None,
+    }
+    _write_calls(capture, "scene-0-e0", [json.dumps(hostile)])
+
+    document = render_wire_replay(capture)
+
+    assert document.count('<article class="call">') == 1
+    assert "</script>" not in document and "<script>" not in document
+    assert "<img" not in document
+    assert "&lt;/script&gt;&lt;script&gt;alert(1)&lt;/script&gt;" in document
+    assert "&lt;img src=x onerror=&quot;alert(2)&quot;&gt;" in document
+
+
 def test_render_wire_replay_notes_capture_without_readable_calls(tmp_path: Path) -> None:
     """A capture directory with no trials renders a noting page, never a crash."""
     document = render_wire_replay(tmp_path / "wire" / "absent")

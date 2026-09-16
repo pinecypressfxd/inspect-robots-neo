@@ -196,8 +196,8 @@ def _call_article(row: dict[str, Any], blob_dir: Path, seen: set[str]) -> str:
     """Render one captured attempt with its new images and assistant output."""
     response = row.get("response")
     head = (
-        f'<span class="call-id">call {_label(row.get("call"))} · '
-        f"attempt {_label(row.get('attempt'))}</span>"
+        f'<span class="call-id">call {_escape(_label(row.get("call")))} · '
+        f"attempt {_escape(_label(row.get('attempt')))}</span>"
         f'<span class="endpoint">{_escape(_label(row.get("endpoint")))}</span>'
         + _status_badge(row.get("status"))
         + f'<span class="badge">{_escape(_duration_text(row.get("duration_s")))}</span>'
