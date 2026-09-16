@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import pytest
 
-from inspect_robots_nero._arm import NeroArm
+from inspect_robots_nero._arm import _FIRMWARE_NAMES, NeroArm
 from inspect_robots_nero._gripper import NeroGripper
 
 from .fakes import FakeAgxRobot, FakeEffector, LegacyEffector
+
+# Keys AgxArmFactory registers for robot="nero", comm="can" (lowercase,
+# verbatim from the vendor SDK's registry block and register_arm docstring).
+_REGISTRY_KEYS = {"default", "v111", "v112", "v120", "v121"}
 
 
 def _arm(robot: FakeAgxRobot) -> NeroArm:
@@ -64,6 +68,17 @@ def test_disable_and_close() -> None:
 def test_unknown_firmware_version_is_rejected() -> None:
     with pytest.raises(ValueError, match="firmware"):
         NeroArm("left", "can_left", firmware="v999", robot=FakeAgxRobot())
+
+
+@pytest.mark.parametrize("alias", sorted(_FIRMWARE_NAMES))
+def test_firmware_aliases_resolve_to_registry_keys(alias: str) -> None:
+    arm = NeroArm("left", "can_left", firmware=alias, robot=FakeAgxRobot(), sleep=lambda _s: None)
+    assert arm._firmware in _REGISTRY_KEYS, alias
+
+
+def test_default_firmware_is_the_config_version() -> None:
+    arm = NeroArm("left", "can_left", robot=FakeAgxRobot(), sleep=lambda _s: None)
+    assert arm._firmware == "v112"
 
 
 def test_gripper_move_and_readback() -> None:

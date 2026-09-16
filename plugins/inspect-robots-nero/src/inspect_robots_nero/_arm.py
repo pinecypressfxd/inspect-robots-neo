@@ -13,14 +13,23 @@ from typing import Any
 
 from inspect_robots_nero._config import FIRMWARE_VERSION
 
+# Values must match the AgxArmFactory registry keys for robot="nero",
+# comm="can" exactly (lowercase); an uppercase key fails with
+# "Driver not registered" at create_arm time.
 _FIRMWARE_NAMES = {
-    "default": "DEFAULT",
-    "v111": "V111",
-    "1.11": "V111",
-    "111": "V111",
-    "v112": "V112",
-    "1.12": "V112",
-    "112": "V112",
+    "default": "default",
+    "v111": "v111",
+    "1.11": "v111",
+    "111": "v111",
+    "v112": "v112",
+    "1.12": "v112",
+    "112": "v112",
+    "v120": "v120",
+    "1.20": "v120",
+    "120": "v120",
+    "v121": "v121",
+    "1.21": "v121",
+    "121": "v121",
 }
 
 
