@@ -84,6 +84,42 @@ or `--timeout` (default 5 s) expires; a timeout exits 1. For
 operator-confirmed incremental `move_js` steps on one arm, use
 `scripts/bench_smoke.py`.
 
+## LeRobot export
+
+`scripts/export_lerobot.py` converts a finished run into a LeRobot v2.1
+dataset for downstream training:
+
+    python scripts/export_lerobot.py logs/adhoc_586b388c.json [-o OUT_DIR] [--images] [--fps 30]
+
+The default output directory is `<log dir>/<log stem>-lerobot` and must not
+already hold files. Each exported trial becomes one episode with one row per
+executed action step (`action` 20-dim from the actions side-car,
+`observation.state` 16-dim `joint_pos`, `timestamp = frame_index / fps`), one
+parquet shard under `data/chunk-000/`, and one MP4 per camera under
+`videos/chunk-000/observation.images.<camera>/` encoded through the core
+shared ffmpeg encoder. `--images` writes `images/<camera>/episode_XXXXXX/`
+PNG trees instead of videos. Feature layout, path templates, and meta files
+(`info.json`, `tasks.jsonl`, `episodes.jsonl`) mirror the bring-up
+converter's `raw_to_lerobot.py` minus its camera-alignment `auxiliary.*`
+fields, which describe a rig this plugin does not have.
+
+Optional dependencies: `pip install pyarrow` (required; the exporter prints
+this hint and exits 2 without it) and an `ffmpeg` binary on PATH for video
+mode (or pass `--images`).
+
+Behavior notes:
+
+- Trials whose action steps lack stored frames are skipped with a warning; a
+  run where no trial has frames exits 1. The frame captured after the final
+  action (no matching action row) is not exported, keeping videos and parquet
+  rows one-to-one.
+- `observation.state` is written only when every exported trial's recorded
+  transcript carries a `state[joint_pos]` line per policy observation aligned
+  with the action rows (the saved log itself stores no per-step state). When
+  any trial lacks that record, the column is dropped from the parquet shards
+  and `info.json` features entirely, and the exporter prints a note; train on
+  `action` plus images in that case.
+
 ## Camera overrides
 
     -E cameras=left_rgbd=/dev/v4l/by-path/pci-0000:80:14.0-usb-0:11.2:1.0-video-index4
