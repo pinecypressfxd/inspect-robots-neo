@@ -158,8 +158,17 @@ the shell that launches the console. Its terminal output is captured to a
 bounded in-memory tail plus a file under `--log-dir` (default `/tmp`), and the
 run's eval log path is detected from the process's `log:` line, falling back
 to the newest `logs/*.live.json` written after the run started. The JSON API
-(`GET /api/status`, `POST /api/start` `/api/stop` `/api/verdict`) drives the
-same controls the page offers.
+(`GET /api/status`, `GET /api/feed`, `POST /api/start` `/api/stop`
+`/api/verdict`) drives the same controls the page offers.
+
+Below the controls the page polls `/api/feed` once a second and renders: the
+run's live-log status (status, current step, total steps, duration), the
+newest transcript tail as one compact line per message (role and text, camera
+images elided to an `[image]` marker, tool calls as `name(arguments)`; the
+last 40 messages, newest pinned), the last five executed action rows from the
+run's action side-car (raw action vectors), and the last wire call's tool
+name with its note or summary argument. Every panel degrades to "no data
+yet" until the run writes the corresponding artifact.
 
 Safety and semantics:
 
@@ -167,26 +176,40 @@ Safety and semantics:
   second (labeled with an explicit arms-will-move warning) actually posts.
   The server separately rejects an empty instruction and any start while a
   run is active. This web confirm replaces the terminal reset gate, which is
-  why the spawned run passes `-E operator_reset_confirm=False`.
+  why the spawned run passes `-E operator_reset_confirm=False`. The terminal
+  gate's Esc key is not reachable from the page; the Stop button (the `/stop`
+  line) is the page's way to end an episode early.
 - The console binds 127.0.0.1 by default. A non-loopback `--host` prints a
-  loud warning: anyone who can reach the page can start the arms.
+  loud warning: anyone who can reach the page can start the arms. Every POST
+  route additionally requires the request's Host header to match the bound
+  address (loopback names accepted for loopback binds, port matching when
+  present) and, when the browser sends an Origin header, that it matches too;
+  anything else gets a 403. A `0.0.0.0` bind accepts any host name but still
+  enforces the port.
 - Camera exclusivity: the tiles hold the three V4L2 nodes while streaming,
   and V4L2 mmap streaming is exclusive per node. The console releases the
-  cameras when a run starts so the spawned eval can claim them (tiles go dark
-  during a run and reconnect when it ends); a tile requested while a run
-  holds the devices answers a plain 503, and so does a dead or busy camera.
-  An eval started outside the console while tiles are live fails to open the
-  cameras: stop the console first. During a run, watch the History link
-  instead (`inspect-robots view logs --serve`), which renders the run's
-  `.live.json` snapshots live.
+  cameras when a run starts so the spawned eval can claim them. During a run
+  the tiles do not go dark: they switch to `GET /frame/<camera>.jpg`, which
+  serves the newest frame the run stored (from the frame directory its
+  `.live.json` records), refreshed once a second, and switch back to the
+  live MJPEG streams when the run ends. A frame requested while a run holds
+  the devices but has not stored that camera yet answers a plain 503, and so
+  does a dead or busy camera. An eval started outside the console while
+  tiles are live fails to open the cameras: stop the console first.
 - Stop and verdicts are graceful: the buttons write the `/stop` and `/y`,
   `/n`, `/p` (or `/skip`) console lines to the run's terminal, which is the
   only control channel, and every write is echoed on the console's stdout.
   The child process is never signalled or killed; it ends by itself (process
   exit, any code, marks the run ended in `/api/status`), and closing the
   console sends one final `/stop` before the terminal closes.
+- Failed starts recover: a spawn that cannot start (unusable instruction,
+  missing binary, full disk for the run log) returns a 400 with the reason,
+  restarts the cameras it had released, and surfaces the error in
+  `/api/status` so the page reconnects its tiles instead of looking stuck.
 
 Manual checklist before first hardware use: all three camera tiles show live
-video; a start round-trip (arm, confirm, the status line flips to running);
-Stop ends the episode; a verdict button resolves the verdict prompt; the
-ended state shows the exit code and log path.
+video; a start round-trip (arm, confirm, the status line flips to running
+and the tiles switch to run frames); the reasoning feed shows the model's
+messages, actions, and last decision while the run is live; Stop ends the
+episode; a verdict button resolves the verdict prompt; the ended state shows
+the exit code and log path and the tiles return to live video.
