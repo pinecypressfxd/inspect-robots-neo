@@ -46,8 +46,19 @@ assets are required).
 
 The Astra model id above was current as of September 2026; confirm with
 `curl -s https://api.openai.com/v1/models -H "Authorization: Bearer $OPENAI_API_KEY" | grep -i astra`
-and record the chosen id here. Proxied endpoints work with
-`-P base_url=... -P api_key_env=NAME`.
+and record the chosen id here. Confirmed lab configuration (September 2026)
+runs Astra through the experientiallabs proxy, where the model id is
+`gpt-6-astra` (no provider prefix; a custom `base_url` passes the model id
+through verbatim):
+
+    export EXPLABS_API_KEY=...
+    inspect-robots "put the cup on the pad with left arm" \
+      --policy agent -P model=gpt-6-astra \
+      -P base_url=https://api.experientiallabs.ai/v1 \
+      -P api_key_env=EXPLABS_API_KEY -P max_speed_frac=0.05 \
+      --embodiment nero
+
+Other proxied endpoints work the same way with `-P base_url=... -P api_key_env=NAME`.
 
 On reset the run prompts to arrange the scene, then drives both arms to their
 home positions before the first observation. End an episode with Esc; the
