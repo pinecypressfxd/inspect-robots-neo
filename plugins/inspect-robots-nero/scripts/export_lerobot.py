@@ -8,7 +8,8 @@ Reads a saved ``EvalLog`` plus its side-car stores — the per-trial actions
 JSONL (``trial_metadata["actions"]``) and the streamed camera frames under
 ``stats.frames_dir`` — and writes a LeRobot v2.1 dataset:
 
-- ``meta/info.json``, ``meta/tasks.jsonl``, ``meta/episodes.jsonl``
+- ``meta/info.json``, ``meta/tasks.jsonl``, ``meta/episodes.jsonl``,
+  ``meta/episodes_stats.jsonl``, ``meta/stats.json``
 - ``data/chunk-000/episode_XXXXXX.parquet`` (one per exported trial)
 - ``videos/chunk-000/observation.images.<camera>/episode_XXXXXX.mp4`` per
   camera per trial, or ``images/<camera>/episode_XXXXXX/frame_XXXXXX.png``
@@ -356,6 +357,93 @@ def _episode_rows(
     return rows
 
 
+def _json_float_list(values: np.ndarray) -> list[float]:
+    """Flatten one numeric array into the authority's JSON float-list shape."""
+    return [float(value) for value in np.asarray(values).reshape(-1).tolist()]
+
+
+def _centered_mean_and_std(array: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+    """Mean/std anchored at the first row: the bring-up stats builder's formula.
+
+    Anchoring keeps long near-constant episodes numerically stable; ``std`` is
+    the population (ddof=0) deviation of the same deltas. Vector stats are
+    computed in float32, exactly like the authority, so exported numbers match
+    its pipeline bit for bit.
+    """
+    center = array[0]
+    deltas = array - center
+    mean = np.asarray(center, dtype=np.float64) + np.mean(deltas, axis=0)
+    return mean, np.std(deltas, axis=0)
+
+
+def _vector_stats(values: list[list[float]]) -> dict[str, list[float]]:
+    """One vector feature's stats chunk: mean/std/min/max/count."""
+    array = np.asarray(values, dtype=np.float32)
+    mean, std = _centered_mean_and_std(array)
+    return {
+        "mean": _json_float_list(mean),
+        "std": _json_float_list(std),
+        "min": _json_float_list(np.min(array, axis=0)),
+        "max": _json_float_list(np.max(array, axis=0)),
+        "count": [int(array.shape[0])],
+    }
+
+
+def _episode_stats_chunk(
+    rows: list[dict[str, Any]], keep_state: bool
+) -> dict[str, dict[str, list[float]]]:
+    """One episode's stats, over the exported float vector columns only.
+
+    The authority computes stats for its vector features and skips video and
+    scalar index columns; this export follows that convention, so the chunks
+    cover ``observation.state`` (when kept) and ``action`` and nothing else.
+    """
+    stats: dict[str, dict[str, list[float]]] = {}
+    if keep_state:
+        stats["observation.state"] = _vector_stats([row["observation.state"] for row in rows])
+    stats["action"] = _vector_stats([row["action"] for row in rows])
+    return stats
+
+
+def _aggregate_feature_stats(
+    stats_list: list[dict[str, list[float]]],
+) -> dict[str, list[float]]:
+    """Count-weighted aggregate of one feature's per-episode chunks."""
+    variances = np.asarray([stats["std"] for stats in stats_list], dtype=np.float64) ** 2
+    counts = np.asarray([stats["count"][0] for stats in stats_list], dtype=np.float64)
+    total_count = float(np.sum(counts))
+    weights = counts.reshape(-1, 1)
+    means = np.asarray([stats["mean"] for stats in stats_list], dtype=np.float64)
+    mean_base = means[0]
+    mean_offsets = means - mean_base
+    mean_offset = np.sum(mean_offsets * weights, axis=0) / total_count
+    variance = (
+        np.sum((variances + (mean_offsets - mean_offset) ** 2) * weights, axis=0) / total_count
+    )
+    return {
+        "mean": _json_float_list(mean_base + mean_offset),
+        "std": _json_float_list(np.sqrt(variance)),
+        "min": [
+            min(values) for values in zip(*(stats["min"] for stats in stats_list), strict=True)
+        ],
+        "max": [
+            max(values) for values in zip(*(stats["max"] for stats in stats_list), strict=True)
+        ],
+        "count": [int(total_count)],
+    }
+
+
+def _aggregate_stats(
+    episode_stats: Sequence[dict[str, dict[str, list[float]]]],
+) -> dict[str, dict[str, list[float]]]:
+    """Global ``stats.json`` content: one aggregated chunk per exported feature."""
+    feature_names = sorted({name for stats in episode_stats for name in stats})
+    return {
+        name: _aggregate_feature_stats([stats[name] for stats in episode_stats if name in stats])
+        for name in feature_names
+    }
+
+
 def _write_episode_parquet(
     pa: Any,
     pq: Any,
@@ -539,6 +627,7 @@ def main(argv: list[str] | None = None) -> int:
     first_shapes: dict[str, tuple[int, int, int]] = {}
     task_index_of: dict[str, int] = {}
     episode_entries: list[dict[str, Any]] = []
+    stats_entries: list[tuple[int, dict[str, dict[str, list[float]]]]] = []
     total_frames = 0
     for episode_index, trial in enumerate(included):
         shapes = (
@@ -561,6 +650,7 @@ def main(argv: list[str] | None = None) -> int:
         episode_entries.append(
             {"episode_index": episode_index, "tasks": [trial.instruction], "length": len(rows)}
         )
+        stats_entries.append((episode_index, _episode_stats_chunk(rows, keep_state)))
         total_frames += len(rows)
 
     info: dict[str, Any] = {
@@ -598,6 +688,22 @@ def main(argv: list[str] | None = None) -> int:
     )
     (meta_dir / "episodes.jsonl").write_text(
         "".join(json.dumps(entry) + "\n" for entry in episode_entries), encoding="utf-8"
+    )
+    (meta_dir / "episodes_stats.jsonl").write_text(
+        "".join(
+            json.dumps({"episode_index": index, "stats": stats}, sort_keys=True) + "\n"
+            for index, stats in stats_entries
+        ),
+        encoding="utf-8",
+    )
+    (meta_dir / "stats.json").write_text(
+        json.dumps(
+            _aggregate_stats([stats for _index, stats in stats_entries]),
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
     )
     print(
         f"wrote LeRobot v2.1 dataset: {out_dir} "

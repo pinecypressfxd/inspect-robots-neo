@@ -98,10 +98,13 @@ executed action step (`action` 20-dim from the actions side-car,
 parquet shard under `data/chunk-000/`, and one MP4 per camera under
 `videos/chunk-000/observation.images.<camera>/` encoded through the core
 shared ffmpeg encoder. `--images` writes `images/<camera>/episode_XXXXXX/`
-PNG trees instead of videos. Feature layout, path templates, and meta files
-(`info.json`, `tasks.jsonl`, `episodes.jsonl`) mirror the bring-up
-converter's `raw_to_lerobot.py` minus its camera-alignment `auxiliary.*`
-fields, which describe a rig this plugin does not have.
+PNG trees instead of videos. Feature layout and path templates mirror the
+bring-up converter's `raw_to_lerobot.py`. Emitted meta files: `info.json`,
+`tasks.jsonl`, `episodes.jsonl`, `episodes_stats.jsonl`, and `stats.json`
+(per-episode and global min/max/mean/std over the exported float columns).
+Omitted: the converter's `info.json` `camera_alignment` block and its
+alignment `auxiliary.*` features and stats, which describe a rig this plugin
+does not have.
 
 Optional dependencies: `pip install pyarrow` (required; the exporter prints
 this hint and exits 2 without it) and an `ffmpeg` binary on PATH for video
@@ -115,7 +118,8 @@ Behavior notes:
   rows one-to-one.
 - `observation.state` is written only when every exported trial's recorded
   transcript carries a `state[joint_pos]` line per policy observation aligned
-  with the action rows (the saved log itself stores no per-step state). When
+  with the action rows (the saved log itself stores no per-step state); the
+  values inherit the transcript's 4-decimal rounding. When
   any trial lacks that record, the column is dropped from the parquet shards
   and `info.json` features entirely, and the exporter prints a note; train on
   `action` plus images in that case.
