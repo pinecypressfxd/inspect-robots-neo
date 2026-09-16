@@ -70,23 +70,22 @@ class D405Camera:
         self._thread: threading.Thread | None = None
 
     def _open(self) -> object:
-        import cv2
+        from inspect_robots_nero._v4l2 import V4L2MmapCapture
 
-        capture = cv2.VideoCapture(self.device, cv2.CAP_V4L2)
-        if not capture.isOpened():
-            raise RuntimeError(
-                f"could not open camera {self.name!r} at {self.device}; check the by-path node "
-                "and pass -E cameras=<name>=<device> to override it"
+        try:
+            capture = V4L2MmapCapture(
+                self.device,
+                width=self.width,
+                height=self.height,
+                fps=self.fps,
+                pixel_format=self.pixel_format,
             )
-        # VideoWriter_fourcc is runtime-present on cv2 4.x/5.x but absent from
-        # the 5.0 stubs, hence the targeted ignore.
-        capture.set(
-            cv2.CAP_PROP_FOURCC,
-            cv2.VideoWriter_fourcc(*self.pixel_format),  # type: ignore[attr-defined]
-        )
-        capture.set(cv2.CAP_PROP_FRAME_WIDTH, self.width)
-        capture.set(cv2.CAP_PROP_FRAME_HEIGHT, self.height)
-        capture.set(cv2.CAP_PROP_FPS, self.fps)
+            capture.start()
+        except (OSError, RuntimeError, ValueError) as exc:
+            raise RuntimeError(
+                f"could not open camera {self.name!r} at {self.device}: {exc}; "
+                "check the by-path node and pass -E cameras=<name>=<device> to override it"
+            ) from exc
         return capture
 
     def start(self) -> None:
