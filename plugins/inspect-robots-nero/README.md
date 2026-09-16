@@ -89,7 +89,7 @@ operator-confirmed incremental `move_js` steps on one arm, use
 `scripts/export_lerobot.py` converts a finished run into a LeRobot v2.1
 dataset for downstream training:
 
-    python scripts/export_lerobot.py logs/adhoc_586b388c.json [-o OUT_DIR] [--images] [--fps 30]
+    python plugins/inspect-robots-nero/scripts/export_lerobot.py logs/adhoc_586b388c.json [-o OUT_DIR] [--images] [--fps 30]
 
 The default output directory is `<log dir>/<log stem>-lerobot` and must not
 already hold files. Each exported trial becomes one episode with one row per
@@ -140,7 +140,7 @@ nero runs: three live camera tiles on top, a status line, an instruction form
 with a two-step start, stop and verdict buttons, and a link to the running
 history viewer. Run it from the repo root:
 
-    python scripts/mission_console.py [--port 8400] [--host 127.0.0.1] \
+    python plugins/inspect-robots-nero/scripts/mission_console.py [--port 8400] [--host 127.0.0.1] \
         [--camera NAME=DEVICE ...] [--max-speed-frac 0.05] \
         [--model gpt-6-astra] [--base-url URL] [--api-key-env EXPLABS_API_KEY] \
         [--history-url http://127.0.0.1:8300/] [--log-dir /tmp]
@@ -220,6 +220,6 @@ instruction, click Start twice (the second click, labeled as such, moves the
 arms), watch the feed panels and the run-frame tiles while the model works,
 press Stop to end the episode early if needed, click a verdict button when
 the run asks, export the finished log with
-`python scripts/export_lerobot.py logs/<stamp>.json` for training data, and
+`python plugins/inspect-robots-nero/scripts/export_lerobot.py logs/<stamp>.json` for training data, and
 review the whole history at the `--history-url` (default
 `http://127.0.0.1:8300/`, served by `inspect-robots view logs --serve`).
