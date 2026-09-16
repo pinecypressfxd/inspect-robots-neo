@@ -15,8 +15,9 @@ Subcommands:
   one resolved policy/embodiment pair via
   [`eval_set`][inspect_robots.eval.eval_set]. Prints one status line and a compact
   per-task row instead of a full summary per task.
-- ``inspect-robots inspect LOG.json [--transcript] [--wire [CALL]]`` — print a
-  saved eval log and optionally append policy conversations or captured wire calls.
+- ``inspect-robots inspect LOG.json [--transcript] [--wire [CALL]] [--replay]`` —
+  print a saved eval log, optionally appending policy conversations or captured
+  wire calls, or rendering the wire capture as ``LOG_DIR/wire-replay.html``.
 - ``inspect-robots summarize LOG.json [--model M]`` — distill a saved eval log
   into a deterministic digest or model-written learnings file.
 - ``inspect-robots view LOG.json|LOG_DIR [-o PATH] [--open] [--serve]`` — render
@@ -72,6 +73,7 @@ from inspect_robots._html import (
 )
 from inspect_robots._html_index import IndexEntry
 from inspect_robots._pointers import derive_blob_dir, read_jsonl_prefix, resolve_log_pointer
+from inspect_robots._wire_replay import render_wire_replay_page
 from inspect_robots.conformance import device_slots
 from inspect_robots.console import USAGE, USAGE_END_ONLY
 from inspect_robots.defaults import (
@@ -424,6 +426,11 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="SCENE-eEPOCH",
         help="select a captured trial for --wire CALL",
+    )
+    p_inspect.add_argument(
+        "--replay",
+        action="store_true",
+        help="render the wire capture as LOG_DIR/wire-replay.html",
     )
 
     p_summarize = sub.add_parser(
@@ -1345,6 +1352,44 @@ def _print_wire_capture(
     _print_wire_call(trials, wire, selected_trial)
 
 
+def _wire_capture_dirs(log: EvalLog, log_path: Path) -> list[Path]:
+    """Resolve every trial's wire pointer to its run capture directory.
+
+    Trials of one run share ``wire/<run>/``; each distinct directory is
+    collected once, first-seen order, so one page renders one section per run.
+    """
+    capture_dirs: list[Path] = []
+    for scene in log.samples:
+        for epoch in range(len(scene.epochs)):
+            if epoch >= len(scene.trial_metadata):
+                continue
+            target = resolve_log_pointer(log_path, scene.trial_metadata[epoch].get("wire_capture"))
+            if target is None:
+                continue
+            blob_dir = derive_blob_dir(log_path, target)
+            if blob_dir is None:
+                continue
+            if blob_dir.parent not in capture_dirs:
+                capture_dirs.append(blob_dir.parent)
+    return capture_dirs
+
+
+def _write_wire_replay(log: EvalLog, log_path: Path) -> None:
+    """Render the log's wire captures to one replay page beside the log.
+
+    A log without resolvable captures prints a note and writes nothing, so the
+    forensic reader degrades like ``--transcript`` instead of failing.
+    """
+    capture_dirs = _wire_capture_dirs(log, log_path)
+    if not capture_dirs:
+        print("no wire capture recorded")
+        return
+    out_path = log_path.parent / "wire-replay.html"
+    document = render_wire_replay_page(capture_dirs, log_path.name)
+    size = _write_html(document, out_path)
+    print(f"wrote {out_path} ({size} bytes)")
+
+
 def _print_run_summary(log: EvalLog, log_path: str, is_adhoc: bool) -> None:
     """Print the compact post-run summary and failure diagnostics."""
     failed = log.status != "success"
@@ -1977,6 +2022,7 @@ def _cmd_inspect(
     transcript: bool = False,
     wire: int | bool | None = None,
     trial: str | None = None,
+    replay: bool = False,
 ) -> int:
     from inspect_robots import read_eval_log
 
@@ -2050,6 +2096,8 @@ def _cmd_inspect(
         _print_wire_capture(log, Path(path), wire, trial)
     elif trial is not None:
         raise SystemExit("--trial requires --wire CALL")
+    if replay:
+        _write_wire_replay(log, Path(path))
     return 0 if log.status == "success" else 1
 
 
@@ -2843,6 +2891,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             transcript=args.transcript,
             wire=args.wire,
             trial=args.trial,
+            replay=args.replay,
         )
     if args.command == "summarize":
         return _cmd_summarize(args)
