@@ -184,8 +184,9 @@ Safety and semantics:
   route additionally requires the request's Host header to match the bound
   address (loopback names accepted for loopback binds, port matching when
   present) and, when the browser sends an Origin header, that it matches too;
-  anything else gets a 403. A `0.0.0.0` bind accepts any host name but still
-  enforces the port.
+  anything else gets a 403. This check is a real barrier only for loopback
+  binds; a wildcard bind (`0.0.0.0`) accepts any host name, and there the
+  port check merely catches misaddressed requests, not foreign ones.
 - Camera exclusivity: the tiles hold the three V4L2 nodes while streaming,
   and V4L2 mmap streaming is exclusive per node. The console releases the
   cameras when a run starts so the spawned eval can claim them. During a run
@@ -213,3 +214,12 @@ and the tiles switch to run frames); the reasoning feed shows the model's
 messages, actions, and last decision while the run is live; Stop ends the
 episode; a verdict button resolves the verdict prompt; the ended state shows
 the exit code and log path and the tiles return to live video.
+
+End to end, one mission looks like this: start the console, type the
+instruction, click Start twice (the second click, labeled as such, moves the
+arms), watch the feed panels and the run-frame tiles while the model works,
+press Stop to end the episode early if needed, click a verdict button when
+the run asks, export the finished log with
+`python scripts/export_lerobot.py logs/<stamp>.json` for training data, and
+review the whole history at the `--history-url` (default
+`http://127.0.0.1:8300/`, served by `inspect-robots view logs --serve`).

@@ -281,12 +281,14 @@ class _Run:
         master_fd: int,
         log_file: TextIO,
         started_at: float,
+        run_id: int,
     ) -> None:
         self.instruction = instruction
         self.process = process
         self.master_fd = master_fd
         self.log_file = log_file
         self.started_at = started_at
+        self.run_id = run_id
         self.tail: deque[str] = deque(maxlen=RING_LINES)
         self.log_path: str | None = None
         self.exit_code: int | None = None
@@ -376,6 +378,7 @@ class RunManager:
                 master_fd=master_fd,
                 log_file=log_file,
                 started_at=time.time(),
+                run_id=self._spawn_count,
             )
             self._run = run
             self._last_error = None
@@ -502,6 +505,7 @@ class RunManager:
                 "state": "running" if run.exit_code is None else "ended",
                 "instruction": run.instruction,
                 "started_at": run.started_at,
+                "run_id": run.run_id,
                 "log": run.log_path,
             }
 
@@ -529,9 +533,11 @@ class RunFeed:
     Every transcript message gets a stable, monotonically increasing ``seq``
     derived from its position inside its source (the live snapshot's active
     trial, or a ``logs/transcripts/<stamp>/<trial>.jsonl`` file), so the page
-    can append only what it has not seen. Sources discovered later start
-    above every seq handed out before, and the global ``seq`` never goes
-    backwards.
+    can append only what it has not seen. Source ids are prefixed with a
+    per-run token: every ad-hoc run's trial is ``scene-0-e0``, so without it
+    run two would reuse run one's cached seq base and poll in below the
+    client's ``since`` watermark. Sources discovered later start above every
+    seq handed out before, and the global ``seq`` never goes backwards.
     """
 
     def __init__(self) -> None:
@@ -640,7 +646,7 @@ def _live_status(doc: Mapping[str, Any]) -> dict[str, Any] | None:
 
 
 def _active_live_transcript(
-    doc: Mapping[str, Any] | None,
+    doc: Mapping[str, Any] | None, token: str
 ) -> tuple[Sequence[object], str] | None:
     """The in-flight trial's transcript from a live snapshot, with its source id."""
     for sample in _samples_of(doc):
@@ -657,7 +663,7 @@ def _active_live_transcript(
             if isinstance(transcript, list):
                 scene_id = sample.get("scene_id")
                 label = scene_id if isinstance(scene_id, str) else "scene"
-                return transcript, f"{label}-e{index}"
+                return transcript, f"{token}:{label}-e{index}"
     return None
 
 
@@ -676,6 +682,17 @@ def _pointer_path(doc: Mapping[str, Any] | None, key: str) -> Path | None:
     return None
 
 
+def _run_token(run: Mapping[str, Any]) -> str:
+    """A per-run prefix for feed source ids, so seqs never repeat across runs.
+
+    Every ad-hoc run's transcript is ``scene-0-e0``; without the run token the
+    second run's messages would reuse the first run's cached seq base and poll
+    in below the client's ``since`` watermark, blanking the feed.
+    """
+    run_id = run.get("run_id")
+    return f"r{run_id}" if isinstance(run_id, int) else "r?"
+
+
 def _transcript_tail(
     doc: Mapping[str, Any] | None, run: Mapping[str, Any]
 ) -> tuple[Sequence[object], str | None]:
@@ -684,21 +701,23 @@ def _transcript_tail(
     Preference order: the live snapshot's active trial (updates mid-trial),
     then the newest ``transcript`` pointer the document records (written at
     trial end), then a newest-file scan under ``logs/transcripts/`` guarded
-    by the run's spawn time.
+    by the run's spawn time. Source ids carry the run token so a later run's
+    seqs sort above every earlier run's.
     """
-    active = _active_live_transcript(doc)
+    token = _run_token(run)
+    active = _active_live_transcript(doc, token)
     if active is not None:
         return active
     pointer = _pointer_path(doc, "transcript")
     if pointer is not None and pointer.is_file():
-        return _read_jsonl_rows(pointer), pointer.stem
+        return _read_jsonl_rows(pointer), f"{token}:{pointer.stem}"
     directory = Path("logs")
     if not directory.is_dir():
         return (), None
     newest = _newest_matching(directory.glob("transcripts/*/*.jsonl"), _started_at_of(run))
     if newest is None:
         return (), None
-    return _read_jsonl_rows(newest), newest.stem
+    return _read_jsonl_rows(newest), f"{token}:{newest.stem}"
 
 
 def _actions_tail(doc: Mapping[str, Any] | None, run: Mapping[str, Any]) -> dict[str, Any] | None:
@@ -839,37 +858,38 @@ def _parse_json_arguments(value: object) -> object:
 
 
 def _stored_frame(
-    frames_dir: str, doc_path: Path | None, camera: str
+    frames_dir: str, doc_path: Path, camera: str
 ) -> tuple[npt.NDArray[np.uint8] | None, str]:
     """The newest stored frame for one camera, or an error explaining its absence.
 
-    Discovery mirrors the core report: the recorded frames directory string
-    as-is, then the same stamp under the log directory's ``frames/``.
+    Directory discovery is core's ``resolve_frames_dir`` (the recorded frames
+    directory string as-is, then the same stamp under the log directory's
+    ``frames/``); the per-camera newest-frame pick is console-local, core has
+    no such helper.
     """
     import numpy as np
 
-    stamp = Path(frames_dir.replace("\\", "/")).name
-    roots = [Path(frames_dir)]
-    if doc_path is not None:
-        roots.append(doc_path.parent / "frames" / stamp)
+    from inspect_robots._video import resolve_frames_dir
+
+    root = resolve_frames_dir(frames_dir, doc_path)
+    if root is None:
+        return None, f"the run's frames directory {frames_dir!r} is not present on disk"
     best: tuple[float, int, Path] | None = None
-    pattern = f"*_{_safe(camera)}_*.npy"
-    for root in roots:
+    try:
+        entries = list(root.glob(f"*_{_safe(camera)}_*.npy"))
+    except OSError:
+        entries = []
+    for path in entries:
+        match = _FRAME_FILE_RE.match(path.name)
+        if match is None:
+            continue
         try:
-            entries = list(root.glob(pattern))
+            mtime = path.stat().st_mtime
         except OSError:
             continue
-        for path in entries:
-            match = _FRAME_FILE_RE.match(path.name)
-            if match is None:
-                continue
-            try:
-                mtime = path.stat().st_mtime
-            except OSError:
-                continue
-            key = (mtime, int(match.group("step")))
-            if best is None or key > (best[0], best[1]):
-                best = (mtime, int(match.group("step")), path)
+        key = (mtime, int(match.group("step")))
+        if best is None or key > (best[0], best[1]):
+            best = (mtime, int(match.group("step")), path)
     if best is None:
         return None, f"no stored frames for camera {camera!r} yet"
     try:
@@ -1113,7 +1133,7 @@ class MissionRequestHandler(BaseHTTPRequestHandler):
                 recorded = stats.get("frames_dir")
                 if isinstance(recorded, str) and recorded:
                     frames_dir = recorded
-        if frames_dir is None:
+        if frames_dir is None or doc_path is None:
             return None, "the run has not recorded a frames directory yet"
         return _stored_frame(frames_dir, doc_path, name)
 
