@@ -43,13 +43,44 @@ def test_read_returns_the_latest_frame_in_rgb() -> None:
 
 
 def test_read_times_out_without_frames() -> None:
-    camera = D405Camera("left_rgbd", "/dev/null", capture=FakeCapture([]))
+    camera = D405Camera(
+        "left_rgbd", "/dev/null", capture=FakeCapture([]), first_frame_timeout_s=0.05
+    )
     camera.start()
     try:
         with pytest.raises(TimeoutError, match="no frames"):
             camera.read(max_age_s=0.05)
     finally:
         camera.stop()
+
+
+def test_first_frame_wait_uses_its_own_budget_beyond_max_age() -> None:
+    # Real D405s deliver their first frame after ~0.7 s of USB warm-up, longer
+    # than the 0.5 s freshness budget; the warm-up wait must not share it.
+    now = [100.0]
+    frame = np.zeros((2, 2, 3), dtype=np.uint8)
+
+    class SlowWarmCapture:
+        def read(self) -> tuple[bool, np.ndarray]:
+            if now[0] >= 101.0:
+                return True, frame
+            now[0] += 0.05  # each poll advances the fake clock
+            return False, np.zeros((0,))
+
+    camera = D405Camera(
+        "left_rgbd", "/dev/null", capture=SlowWarmCapture(), clock=lambda: now[0], poll_s=0.001
+    )
+    camera.start()
+    try:
+        got, _stamp = camera.read(max_age_s=0.5)
+        assert got.shape == (2, 2, 3)
+    finally:
+        camera.stop()
+
+
+def test_first_frame_timeout_s_must_be_positive() -> None:
+    with pytest.raises(ValueError, match="first_frame_timeout_s"):
+        D405Camera("left_rgbd", "/dev/null", first_frame_timeout_s=0.0)
 
 
 def test_read_rejects_stale_frames_with_injected_clock() -> None:

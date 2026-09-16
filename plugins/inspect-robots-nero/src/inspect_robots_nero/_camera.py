@@ -7,6 +7,7 @@ rejects stale ones so the observation is never silently old.
 
 from __future__ import annotations
 
+import math
 import threading
 import time
 from collections.abc import Callable
@@ -46,7 +47,12 @@ class D405Camera:
         capture: object | None = None,
         clock: Callable[[], float] = time.monotonic,
         poll_s: float = 0.005,
+        first_frame_timeout_s: float = 3.0,
     ) -> None:
+        if not math.isfinite(first_frame_timeout_s) or first_frame_timeout_s <= 0:
+            raise ValueError(
+                f"first_frame_timeout_s must be positive and finite, got {first_frame_timeout_s!r}"
+            )
         self.name = name
         self.device = device
         self.width = int(width)
@@ -57,6 +63,7 @@ class D405Camera:
         self._capture: object | None = capture
         self._clock = clock
         self._poll_s = poll_s
+        self._first_frame_timeout_s = float(first_frame_timeout_s)
         self._lock = threading.Lock()
         self._latest: tuple[np.ndarray, float] | None = None
         self._running = False
@@ -112,20 +119,28 @@ class D405Camera:
                 self._latest = (rgb, self._clock())
 
     def read(self, *, max_age_s: float) -> tuple[np.ndarray, float]:
-        """Return (rgb frame, stamp); TimeoutError when absent or stale."""
-        deadline = self._clock() + max_age_s
+        """Return (rgb frame, stamp); TimeoutError when absent or stale.
+
+        The wait for the FIRST frame uses the separate, larger
+        ``first_frame_timeout_s`` budget (USB warm-up on the D405 color node
+        takes ~0.7 s, longer than a sane freshness budget); once frames have
+        arrived, ``max_age_s`` bounds their staleness.
+        """
         with self._lock:
             latest = self._latest
-        while latest is None:
-            # The grab thread may not have stamped its first frame yet; wait
-            # within the same freshness budget before declaring the stream dead.
-            if not self._running or self._clock() >= deadline:
-                raise TimeoutError(
-                    f"camera {self.name!r} produced no frames; check the device node and cabling"
-                )
-            time.sleep(self._poll_s)
-            with self._lock:
-                latest = self._latest
+        if latest is None:
+            deadline = self._clock() + self._first_frame_timeout_s
+            while True:
+                with self._lock:
+                    latest = self._latest
+                if latest is not None:
+                    break
+                if not self._running or self._clock() >= deadline:
+                    raise TimeoutError(
+                        f"camera {self.name!r} produced no frames within "
+                        f"{self._first_frame_timeout_s:g}s; check the device node and cabling"
+                    )
+                time.sleep(self._poll_s)
         frame, stamp = latest
         age = self._clock() - stamp
         if age > max_age_s:
