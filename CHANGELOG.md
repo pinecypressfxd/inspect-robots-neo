@@ -16,6 +16,14 @@ All notable changes to this project are documented here. The format is based on
 
 ### Added
 
+- **Core:** `inspect-robots inspect LOG --replay` renders the wire capture as
+  one self-contained `wire-replay.html` beside the log: per call, the new
+  observation images, tool calls, reasoning, and status and duration badges.
+
+- **Plugins:** `inspect-robots-nero` gains a mission console (live camera
+  tiles, two-step start/stop, verdict buttons, reasoning feed) and a LeRobot
+  v2.1 dataset exporter for completed logs.
+
 - **Plugins:** `inspect-robots-nero`, a real-hardware embodiment for the lab's
   dual Nero CAN arms (EE-pose actions, pinocchio IK, D405 color cameras),
   evaluated with any Inspect Robots policy, e.g. the `agent` policy on
