@@ -1416,6 +1416,7 @@ class MissionRequestHandler(BaseHTTPRequestHandler):
         """Send one complete response with an explicit length."""
         self.send_response(code)
         self.send_header("Content-Type", content_type)
+        self.send_header("Cache-Control", "no-store")
         self.send_header("Content-Length", str(len(payload)))
         if extra_headers is not None:
             for key, value in extra_headers.items():
