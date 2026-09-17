@@ -46,7 +46,7 @@ def joint_envelope() -> tuple[np.ndarray, np.ndarray]:
     return low, high
 
 
-def clamp_to_joint_envelope(joints: Sequence[float]) -> np.ndarray:
+def clamp_to_joint_envelope(joints: Sequence[float] | np.ndarray) -> np.ndarray:
     """Clamp commanded joints into the envelope so the firmware never faults.
 
     The firmware disables the arm (a gravity fall) when commanded past its
