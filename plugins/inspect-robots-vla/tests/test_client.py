@@ -265,6 +265,25 @@ def test_poll_garbage_body_raises(fake_vla: _FakeVlaServer) -> None:
     client.close()
 
 
+def test_poll_bare_npy_body_raises_vla_service_error() -> None:
+    # A 200 body holding a bare .npy (not NPZ) makes np.load return an ndarray,
+    # whose context-manager use raises TypeError; that must surface as a
+    # VlaServiceError, not leak the raw TypeError.
+    buffer = io.BytesIO()
+    np.save(buffer, np.zeros((20, 14), dtype=np.float32))
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, content=buffer.getvalue())
+
+    client = VlaClient(
+        "http://127.0.0.1:10055",
+        transport=httpx.MockTransport(cast(Callable[[httpx.Request], httpx.Response], handler)),
+    )
+    with pytest.raises(VlaServiceError, match="undecodable"):
+        client.poll(0)
+    client.close()
+
+
 def test_transport_is_injectable_and_bad_statuses_raise() -> None:
     calls: list[str] = []
 

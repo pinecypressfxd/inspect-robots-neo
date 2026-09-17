@@ -109,7 +109,7 @@ def _decode_chunk(base_url: str, content: bytes) -> VlaChunk:
             actions = np.asarray(npz["actions"], dtype=np.float32)
             action_format = str(npz["action_format"].item())
             status = str(npz["status"].item())
-    except (OSError, ValueError, KeyError, zipfile.BadZipFile) as exc:
+    except (OSError, ValueError, KeyError, TypeError, zipfile.BadZipFile) as exc:
         raise VlaServiceError(
             f"VLA service at {base_url} returned an undecodable /result/latest "
             f"body ({exc!r}); {_REMEDY}"
