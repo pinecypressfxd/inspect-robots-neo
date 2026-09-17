@@ -1,0 +1,28 @@
+"""Tunable defaults for the :10055 VLA wire client and the hybrid policy.
+
+Every value here is a constructor default, overridable per run with ``-P k=v``
+through the policy factories (plan 0084). Wire facts (field names, CHW layout,
+``xyz_rpy`` delta actions) are verified against the live service and the
+``serve_rlt_inference`` source; see ``plans/0084-vla-hybrid-policy.md``.
+"""
+
+from __future__ import annotations
+
+VLA_BASE_URL = "http://127.0.0.1:10055"
+VLA_SUBMIT_TIMEOUT_S = 10.0
+VLA_POLL_INTERVAL_S = 0.05
+VLA_POLL_TIMEOUT_S = 30.0
+
+# In-chunk tracking-abort thresholds (2026-09-17 design conversation).
+TRACKING_ABORT_POS_M = 0.03
+TRACKING_ABORT_ROT_DEG = 20.0
+# Hybrid policy cadence: how often the planner sees execution progress.
+CHECKPOINT_INTERVAL_S = 5.0
+# Cap on one delegate_skill segment before the planner regains control.
+MAX_SKILL_SECONDS = 60.0
+
+CHUNK_STEPS = 20
+# Per arm xyz (3) + rpy (3) + gripper (1), two arms.
+ACTION_DIM_VLA = 14
+# The only action_format this client can decode; the live service emits it.
+ACTION_FORMAT = "xyz_rpy"
