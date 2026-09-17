@@ -95,3 +95,13 @@ def test_connect_all_disconnects_successful_sides_when_one_fails() -> None:
         connect_all(arms)
     assert robots["left"].disconnected
     assert not robots["right"].disconnected
+
+
+def test_home_accepts_an_already_enabled_arm() -> None:
+    arms, robots = _connected_arms()
+    for robot in robots.values():
+        robot.enabled = True  # an earlier process enabled and never closed
+        robot.enable_result = False  # firmware returns falsy when already enabled
+    home_arms(arms, wait_s=0.0, sleep=lambda _seconds: None)
+    for robot in robots.values():
+        assert robot.move_j_calls  # homing proceeded despite the falsy enable

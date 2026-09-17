@@ -58,7 +58,10 @@ class FakeAgxRobot:
         self.disconnected = True
 
     def enable(self) -> bool:
-        self.enabled = self.enable_result
+        # A refused enable leaves the current state alone (the firmware
+        # returns falsy for an already-enabled arm without disabling it).
+        if self.enable_result:
+            self.enabled = True
         return self.enable_result
 
     def disable(self) -> bool:

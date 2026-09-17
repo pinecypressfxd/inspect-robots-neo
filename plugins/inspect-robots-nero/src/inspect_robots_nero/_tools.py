@@ -49,10 +49,26 @@ def home_arms(
     *,
     wait_s: float,
     sleep: Sleeper = time.sleep,
+    enable_retries: int = 3,
+    retry_pause_s: float = 0.5,
 ) -> None:
-    """Enable every arm, switch to position mode, and move_j it to home."""
+    """Enable every arm, switch to position mode, and move_j it to home.
+
+    ``enable()`` returns falsy both for a refused enable and for an arm that
+    is already enabled (firmware semantics), so a falsy return retries a few
+    times and then accepts the state when the per-joint flags say enabled.
+    """
     for arm in arms.values():
-        if not arm.enable():
+        if arm.enable():
+            continue
+        for _ in range(enable_retries):
+            enabled = arm.enable_status() or []
+            if enabled and all(enabled):
+                break
+            sleep(retry_pause_s)
+            if arm.enable():
+                break
+        else:
             raise RuntimeError(f"failed to enable the {arm.side} arm before move_j")
     for arm in arms.values():
         arm.set_position_mode()
