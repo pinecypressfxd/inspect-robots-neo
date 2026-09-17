@@ -545,3 +545,40 @@ def test_close_leaves_injected_backends_alone() -> None:
     policy = _policy(llm, vla)
     policy.close()
     assert not vla.closed
+
+
+def test_transcript_hooks_expose_the_planner_conversation() -> None:
+    llm = _FakeLlm([_delegate("lift the cup"), _done("cup on saucer")])
+    vla = _FakeVla([_zero_chunk()])
+    policy = _policy(llm, vla, checkpoint_interval_s=0.0)
+    assert policy.transcript() is None  # no trial yet: no conversation
+
+    _reset(policy)
+    policy.act(_observation())  # delegate + one executed chunk
+    first_delta = policy.transcript_delta()
+    assert first_delta is not None
+    dumped = json.dumps(first_delta)
+    assert "image omitted" in dumped  # frames are stubbed, never serialized
+    assert "image_url" not in dumped
+    assert "lift the cup" in dumped
+    assert first_delta[0]["role"] == "system"
+
+    policy.act(_observation())  # checkpoint -> done
+    second_delta = policy.transcript_delta()
+    full = policy.transcript()
+    assert second_delta is not None and full is not None
+    # The delta carries only what was appended since the previous read; the
+    # full transcript carries the whole conversation including both turns.
+    assert len(second_delta) < len(full)
+    assert "cup on saucer" in json.dumps(second_delta)
+    assert "Goal: " + _PROMPT in json.dumps(full)
+    # A deep copy: callers cannot corrupt the live conversation through it.
+    full.append({"role": "user", "content": "forged"})
+    assert len(policy.transcript() or []) == len(full) - 1
+    # A fresh trial re-arms the cursor: the next delta starts from system, and
+    # the goal line is the configured prompt (it overrides scene instructions).
+    _reset(policy, instruction="a scene instruction the prompt overrides")
+    fresh = policy.transcript_delta()
+    assert fresh is not None
+    assert [m["role"] for m in fresh] == ["system", "user"]
+    assert "Goal: " + _PROMPT in json.dumps(fresh)

@@ -16,6 +16,14 @@ All notable changes to this project are documented here. The format is based on
 
 ### Added
 
+- **Plugins:** `inspect-robots-vla` ships two policies speaking the live
+  `serve_rlt_inference` NPZ wire on :10055: `umi-replay`, the pure VLA adapter
+  whose delta chunks are re-anchored per chunk onto the observed EE state, and
+  `hybrid`, where a frontier LLM decomposes the goal and delegates skill
+  segments to that VLA with checkpoint, tracking-abort, and time-cap handbacks
+  (the planner conversation lands in the eval log through the `transcript()`
+  hook).
+
 - **Core:** `inspect-robots inspect LOG --replay` renders the wire capture as
   one self-contained `wire-replay.html` beside the log: per call, the new
   observation images, tool calls, reasoning, and status and duration badges.

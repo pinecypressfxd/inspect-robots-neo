@@ -4,8 +4,11 @@ The pure adapter lives in
 [`policy`][inspect_robots_vla.policy] and the planner-executor hybrid in
 [`hybrid`][inspect_robots_vla.hybrid] (registered as ``hybrid`` through its
 own entry point). The hybrid module is reached lazily, by entry point or the
-``__getattr__`` below, so importing this package for the ``umi-replay``
-policy alone never pulls the agent plugin the hybrid's planner needs.
+``__getattr__`` below, so a direct ``import inspect_robots_vla`` never pulls
+the agent plugin the hybrid's planner needs. Registry paths are different:
+the core registry eagerly loads every entry point in the group, so listing or
+resolving policies imports the hybrid module (and the agent plugin it
+declares as a dependency) regardless.
 """
 
 from __future__ import annotations

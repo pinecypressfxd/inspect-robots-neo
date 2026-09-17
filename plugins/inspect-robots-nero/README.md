@@ -33,7 +33,14 @@ pip install inspect-robots-nero, plus the vendor SDK from the lab checkout:
     pip install -e <neo_manipulation checkout>/third_party/pyAgxArm
 
 `inspect-robots doctor --embodiment nero` reports a missing `pyAgxArm` install
-with this remedy. The URDF (`assets/dual_nero_pika.urdf`) ships with the
+with this remedy. Any workspace `uv sync` prunes venv packages that are not in
+the lock, which silently removes the editable `pyAgxArm` (and `pyarrow`, which
+the LeRobot exporter needs); after syncing, reinstall both:
+
+    uv pip install -e <neo_manipulation checkout>/third_party/pyAgxArm
+    uv pip install pyarrow
+
+The URDF (`assets/dual_nero_pika.urdf`) ships with the
 package, copied from the neo_manipulation repository (kinematics only; no mesh
 assets are required).
 

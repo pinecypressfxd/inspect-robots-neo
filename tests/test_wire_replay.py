@@ -351,6 +351,15 @@ def test_replay_page_omits_rows_with_empty_values(tmp_path: Path) -> None:
     assert "<dt>status</dt><dd>completed</dd>" in page
 
 
+def test_replay_page_omits_the_header_when_every_value_is_empty(tmp_path: Path) -> None:
+    capture = _capture_with(tmp_path)
+    from inspect_robots._wire_replay import render_wire_replay_page
+
+    assert '<dl class="runmeta">' not in render_wire_replay_page(
+        [capture], "log.json", fields={"instruction": "", "status": ""}
+    )
+
+
 def _capture_with(tmp_path: Path) -> Path:
     """One capture dir with a single well-formed call."""
     capture = _capture(tmp_path)

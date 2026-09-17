@@ -13,6 +13,7 @@ approver chain.
 from __future__ import annotations
 
 import contextlib
+import copy
 import enum
 import json
 import os
@@ -222,6 +223,27 @@ def _positive(name: str, value: float, *, zero_ok: bool = False) -> float:
     return float(value)
 
 
+def _sanitize(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return an image-free deep copy suitable for persistence or visualization.
+
+    Same contract as the agent and capx plugins' helpers: the planner
+    conversation carries streamed camera frames as ``image_url`` parts, which
+    must not land in the eval log or the live stream.
+    """
+    sanitized = copy.deepcopy(messages)
+    for message in sanitized:
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for index, part in enumerate(content):
+            if isinstance(part, dict) and part.get("type") == "image_url":
+                content[index] = {
+                    "type": "text",
+                    "text": "[image omitted: streamed camera frame]",
+                }
+    return sanitized
+
+
 class HybridPolicy(PolicyBase):
     """The ``hybrid`` policy: LLM planning, VLA execution, checkpoints between.
 
@@ -236,6 +258,12 @@ class HybridPolicy(PolicyBase):
     (capped by ``max_skill_seconds``) elapses, or when the last commanded step
     tracks beyond the abort thresholds.
 
+    Controller assumptions: the tracking check and the segment step counts
+    assume the default controller plays each returned chunk to its end. A
+    programmatic ``replan_interval`` (re-inferring mid-chunk) or chunk
+    ensembling is unsupported here: rows the controller never played would be
+    measured as tracking error, and the progress note would overcount steps.
+
     Ownership: the framework has no close hook for policies (``eval()`` closes
     only the embodiments it resolves), so the chat and VLA clients this
     constructor builds are closed on ``close()`` and again, guarded, at
@@ -247,6 +275,7 @@ class HybridPolicy(PolicyBase):
     # the segment paths assign narrower values than the later uses read.
     _phase: _Phase
     _messages: list[dict[str, Any]]
+    _delta_cursor: int
     _calls_used: int
     _previous_attempt_failed: bool
     _subgoal: str | None
@@ -436,6 +465,21 @@ class HybridPolicy(PolicyBase):
             {"role": "system", "content": self._system_prompt()},
             {"role": "user", "content": f"Goal: {goal}"},
         ]
+
+    def transcript(self) -> list[dict[str, Any]] | None:
+        """Return an image-free deep copy of the planner conversation.
+
+        The rollout's duck-typed end-of-trial hook: the sanitized conversation
+        lands in ``TrialRecord.policy_transcript`` (and so the eval log) the
+        same way the agent policy's does.
+        """
+        return _sanitize(self._messages) if self._messages else None
+
+    def transcript_delta(self) -> list[dict[str, Any]] | None:
+        """Sanitized messages appended since the previous call (live-stream hook)."""
+        new = self._messages[self._delta_cursor :]
+        self._delta_cursor = len(self._messages)
+        return _sanitize(new) if new else None
 
     def close(self) -> None:
         """Close the clients this policy built; injected backends stay the caller's."""
@@ -778,6 +822,7 @@ class HybridPolicy(PolicyBase):
         """Reset every per-trial mutable field; called from __init__ and reset."""
         self._phase = _Phase.PLANNING
         self._messages = []
+        self._delta_cursor = 0
         self._calls_used = 0
         self._previous_attempt_failed = False
         self._subgoal = None

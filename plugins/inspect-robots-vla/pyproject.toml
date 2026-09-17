@@ -24,7 +24,9 @@ classifiers = [
 # package" doctrine of the agent and xpolicylab plugins. scipy is the anchor
 # module's rpy/rot6d math. The hybrid's planner reuses the agent plugin's
 # chat client (AssistantMessage/ToolCall/resolve_provider), the same reuse
-# capx makes; umi-replay alone imports none of it (lazy hybrid module).
+# capx makes, so inspect-robots-agent is a declared dependency: the core
+# registry eagerly loads every entry point, which imports the hybrid module
+# (and with it the agent plugin) on any registry path, not just hybrid runs.
 dependencies = [
     "inspect-robots>=0.44",
     "inspect-robots-agent>=0.26",
@@ -38,9 +40,9 @@ dev = ["pytest>=8.0", "pytest-cov>=5.0", "mypy>=1.11", "ruff>=0.6"]
 
 # Entry-point discovery: an installed inspect-robots-vla appears in
 # `inspect-robots list policies` without being imported first. The registry
-# calls these factories by name (`umi-replay`, `hybrid`). The hybrid points
-# at its own module so listing or loading the pure adapter never imports the
-# agent plugin.
+# calls these factories by name (`umi-replay`, `hybrid`) but eagerly loads
+# every entry point in the group, so any registry path imports the hybrid
+# module and, through it, the agent plugin the hybrid depends on.
 [project.entry-points."inspect_robots.policies"]
 umi-replay = "inspect_robots_vla:umi_replay"
 hybrid = "inspect_robots_vla.hybrid:hybrid_policy"
