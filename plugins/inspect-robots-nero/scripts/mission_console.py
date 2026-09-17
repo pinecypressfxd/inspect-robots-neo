@@ -1761,7 +1761,7 @@ async function pollFeed() {
     const pty = document.getElementById("ptybody");
     if (pty) {
       const lines = feed.pty_tail || [];
-      pty.textContent = lines.length ? lines.join("\n") : "no output yet";
+      pty.textContent = lines.length ? lines.join("\\n") : "no output yet";
     }
     if (typeof feed.seq === "number" && feed.seq > since) { since = feed.seq; }
   } catch (err) {
