@@ -1374,6 +1374,20 @@ def _wire_capture_dirs(log: EvalLog, log_path: Path) -> list[Path]:
     return capture_dirs
 
 
+def _replay_header_fields(log: EvalLog) -> dict[str, str]:
+    """Header rows for the replay page: instruction, times, and status."""
+    created = getattr(log, "created", None)
+    instruction = next(
+        (str(sample.instruction) for sample in log.samples if sample.instruction),
+        "",
+    )
+    return {
+        "instruction": instruction,
+        "created": str(created or ""),
+        "status": str(log.status),
+    }
+
+
 def _write_wire_replay(log: EvalLog, log_path: Path) -> None:
     """Render the log's wire captures to one replay page beside the log.
 
@@ -1385,7 +1399,11 @@ def _write_wire_replay(log: EvalLog, log_path: Path) -> None:
         print("no wire capture recorded")
         return
     out_path = log_path.parent / "wire-replay.html"
-    document = render_wire_replay_page(capture_dirs, log_path.name)
+    document = render_wire_replay_page(
+        capture_dirs,
+        log_path.name,
+        fields=_replay_header_fields(log),
+    )
     size = _write_html(document, out_path)
     print(f"wrote {out_path} ({size} bytes)")
 

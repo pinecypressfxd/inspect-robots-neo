@@ -317,3 +317,42 @@ def test_inspect_without_replay_writes_no_artifact(
 
     assert "wire-replay" not in capsys.readouterr().out
     assert not (tmp_path / "wire-replay.html").exists()
+
+
+def test_replay_page_renders_escaped_header_fields(tmp_path: Path) -> None:
+    capture = _capture_with(tmp_path)
+    from inspect_robots._wire_replay import render_wire_replay_page
+
+    page = render_wire_replay_page(
+        [capture],
+        "log.json",
+        fields={"instruction": "put <b>the</b> cup", "created": "2026-09-17T02:00:00+00:00"},
+    )
+    assert '<dl class="runmeta">' in page
+    assert "put &lt;b&gt;the&lt;/b&gt; cup" in page
+    assert "<dt>created</dt><dd>2026-09-17T02:00:00+00:00</dd>" in page
+
+
+def test_replay_page_omits_the_header_without_fields(tmp_path: Path) -> None:
+    capture = _capture_with(tmp_path)
+    from inspect_robots._wire_replay import render_wire_replay_page
+
+    assert '<dl class="runmeta">' not in render_wire_replay_page([capture], "log.json")
+
+
+def test_replay_page_omits_rows_with_empty_values(tmp_path: Path) -> None:
+    capture = _capture_with(tmp_path)
+    from inspect_robots._wire_replay import render_wire_replay_page
+
+    page = render_wire_replay_page(
+        [capture], "log.json", fields={"instruction": "", "status": "completed"}
+    )
+    assert "instruction" not in page
+    assert "<dt>status</dt><dd>completed</dd>" in page
+
+
+def _capture_with(tmp_path: Path) -> Path:
+    """One capture dir with a single well-formed call."""
+    capture = _capture(tmp_path)
+    _write_calls(capture, "scene-0-e0", [json.dumps(_chat_row())])
+    return capture

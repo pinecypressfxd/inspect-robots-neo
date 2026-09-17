@@ -19,7 +19,7 @@ import base64
 import html
 import json
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -50,6 +50,10 @@ main { width: min(1120px, calc(100% - 32px)); margin: 0 auto 64px; }
 h1 { margin: 28px 0 0; font-size: 24px; font-weight: 650; }
 .meta { color: var(--muted); margin: 6px 0 0; overflow-wrap: anywhere; }
 .note { color: var(--muted); margin: 24px 0; }
+dl.runmeta { display: grid; grid-template-columns: max-content 1fr; gap: 4px 14px;
+  margin: 14px 0 0; }
+dl.runmeta dt { color: var(--muted); font-size: 13px; }
+dl.runmeta dd { margin: 0; overflow-wrap: anywhere; }
 .capture {
   margin: 22px 0; padding: 20px 22px; background: var(--panel);
   border: 1px solid var(--line); border-radius: 9px;
@@ -120,11 +124,18 @@ def render_wire_replay(capture_dir: Path) -> str:
     return render_wire_replay_page((capture_dir,), capture_dir.name)
 
 
-def render_wire_replay_page(capture_dirs: Sequence[Path], log_name: str) -> str:
+def render_wire_replay_page(
+    capture_dirs: Sequence[Path],
+    log_name: str,
+    *,
+    fields: Mapping[str, str] | None = None,
+) -> str:
     """Compose every capture directory an eval log referenced into one page.
 
     Directories without readable trials contribute nothing; when none do, the
     page body carries a ``no readable wire calls`` note instead of failing.
+    ``fields`` renders an escaped key/value header (task instruction, times,
+    status) above the sections; every value is escaped exactly once.
     """
     sections = [
         section
@@ -138,8 +149,22 @@ def render_wire_replay_page(capture_dirs: Sequence[Path], log_name: str) -> str:
         '<!doctype html>\n<html lang="en">\n<head>\n<meta charset="utf-8">\n'
         f"<title>{title}</title>\n<style>{_CSS}</style>\n</head>\n<body>\n<main>\n"
         f'<h1>Wire replay</h1>\n<p class="meta">{_escape(log_name)}</p>\n'
-        f"{note}{body}\n</main>\n</body>\n</html>\n"
+        f"{_header_fields(fields)}{note}{body}\n</main>\n</body>\n</html>\n"
     )
+
+
+def _header_fields(fields: Mapping[str, str] | None) -> str:
+    """Render the run header (instruction, times, status) as an escaped dl."""
+    if not fields:
+        return ""
+    rows = "".join(
+        f"<dt>{_escape(str(key))}</dt><dd>{_escape(str(value))}</dd>"
+        for key, value in fields.items()
+        if str(value) != ""
+    )
+    if not rows:
+        return ""
+    return f'<dl class="runmeta">{rows}</dl>'
 
 
 def _capture_section(capture_dir: Path) -> str | None:

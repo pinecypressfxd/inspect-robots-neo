@@ -196,6 +196,99 @@ def _write_pty(master_fd: int, data: bytes) -> str | None:
     return None
 
 
+class LerobotExporter:
+    """Auto-export each cleanly finished run to LeRobot v2.1 in the background."""
+
+    def __init__(self, script: Path, log_dir: Path) -> None:
+        self._script = script
+        self._log_dir = log_dir
+        self._lock = threading.Lock()
+        self._last = "not run yet"
+        self._busy = False
+
+    def describe(self) -> dict[str, Any]:
+        """Status fields for the page."""
+        with self._lock:
+            return {"busy": self._busy, "last": self._last}
+
+    def maybe_export(self, exit_code: int | None, log_path: str | None) -> None:
+        """Queue one export when the run finished cleanly with a written log."""
+        if exit_code != 0 or not log_path or not Path(log_path).is_file():
+            with self._lock:
+                self._last = f"skipped (exit {exit_code}, log {log_path or 'none'})"
+            return
+        with self._lock:
+            if self._busy:
+                self._last = "skipped (an export is already running)"
+                return
+            self._busy = True
+        thread = threading.Thread(target=self._export, args=(log_path,), daemon=True)
+        thread.name = "lerobot-export"
+        thread.start()
+
+    def _export(self, log_path: str) -> None:
+        started = time.monotonic()
+        replay_note = _render_wire_replay_for(log_path)
+        try:
+            out_log = self._log_dir / (
+                f"mission-console-lerobot-{time.strftime('%Y%m%d-%H%M%S')}.log"
+            )
+            with out_log.open("w", encoding="utf-8") as handle:
+                done = subprocess.run(
+                    [sys.executable, str(self._script), log_path],
+                    stdout=handle,
+                    stderr=subprocess.STDOUT,
+                    timeout=600,
+                    check=False,
+                )
+            summary = f"exit {done.returncode} ({time.monotonic() - started:.0f}s) -> {out_log}"
+        except (OSError, subprocess.SubprocessError) as exc:
+            summary = f"failed ({exc})"
+        finally:
+            print(f"[console] lerobot export: {summary}; replay: {replay_note}")
+            with self._lock:
+                self._busy = False
+                self._last = f"{summary}; replay: {replay_note}"
+
+
+def _render_wire_replay_for(log_path: str) -> str:
+    """Render the run's wire capture to a timestamped replay HTML; note on failure."""
+    try:
+        from inspect_robots._pointers import resolve_log_pointer
+        from inspect_robots._wire_replay import render_wire_replay_page
+
+        log = json.loads(Path(log_path).read_text(encoding="utf-8"))
+        root = Path(log_path).resolve().parent
+        capture_dirs: list[Path] = []
+        for sample in log.get("samples") or []:
+            for entry in sample.get("trial_metadata") or []:
+                pointer = entry.get("wire_capture")
+                if not isinstance(pointer, str) or not pointer:
+                    continue
+                calls = resolve_log_pointer(root, pointer)
+                if calls is not None:
+                    capture_dirs.append(calls.parent)
+        if not capture_dirs:
+            return "none recorded"
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        out = root / f"wire-replay-{stamp}.html"
+        unique = list(dict.fromkeys(capture_dirs))
+        instruction = next(
+            (str(s.get("instruction")) for s in (log.get("samples") or []) if s.get("instruction")),
+            "",
+        )
+        created = str(log.get("created") or "")
+        ended = str(log.get("stats", {}).get("ended_at") or "")
+        fields = {"instruction": instruction, "created": created, "ended": ended}
+        out.write_text(
+            render_wire_replay_page(unique, Path(log_path).name, fields=fields),
+            encoding="utf-8",
+        )
+        return str(out)
+    except (OSError, ValueError, KeyError) as exc:
+        return f"failed ({exc})"
+
+
 class ArmToolRunner:
     """Run arm_tools.py (home / emergency disable) in the background, one at a time."""
 
@@ -368,11 +461,18 @@ class RunManager:
     console exits.
     """
 
-    def __init__(self, prefix: list[str], suffix: list[str], log_dir: Path) -> None:
+    def __init__(
+        self,
+        prefix: list[str],
+        suffix: list[str],
+        log_dir: Path,
+        exporter: LerobotExporter | None = None,
+    ) -> None:
         """Store the argv halves (instruction is appended between them)."""
         self._prefix = prefix
         self._suffix = suffix
         self._log_dir = log_dir
+        self._exporter = exporter
         self._lock = threading.Lock()
         self._run: _Run | None = None
         self._spawn_count = 0
@@ -513,6 +613,8 @@ class RunManager:
             os.close(run.master_fd)
             run.log_file.close()
         print(f"[console] ended: exit code {exit_code}; log: {log_path or '(none detected)'}")
+        if self._exporter is not None:
+            self._exporter.maybe_export(exit_code, log_path)
 
     def write_line(self, line: str) -> str | None:
         """Write one operator line to the active run's terminal, or an error.
@@ -1019,6 +1121,7 @@ class MissionRequestHandler(BaseHTTPRequestHandler):
         elif path == "/api/status":
             status = self.server.runs.status()
             status["arm_tool"] = self.server.armtools.describe()
+            status["lerobot"] = self.server.exports.describe()
             status["verdict_pending"] = self.server.runs._stop_requested
             self._send_json(200, status)
         elif path == "/api/feed":
@@ -1337,6 +1440,7 @@ class MissionServer(ThreadingHTTPServer):
         pool: CameraPool,
         runs: RunManager,
         armtools: ArmToolRunner,
+        exporter: LerobotExporter,
         page_html: bytes,
     ) -> None:
         """Bind ``address``; requests are served by MissionRequestHandler."""
@@ -1344,6 +1448,7 @@ class MissionServer(ThreadingHTTPServer):
         self.pool = pool
         self.runs = runs
         self.armtools = armtools
+        self.exports = exporter
         self.feed = RunFeed()
         self.page_html = page_html
         host = address[0].lower()
@@ -1813,10 +1918,11 @@ def main(argv: list[str] | None = None) -> int:
 
     pool = CameraPool(overrides)
     prefix, suffix = build_command(args)
-    runs = RunManager(prefix, suffix, Path(args.log_dir))
+    exporter = LerobotExporter(Path(__file__).with_name("export_lerobot.py"), Path(args.log_dir))
+    runs = RunManager(prefix, suffix, Path(args.log_dir), exporter)
     armtools = ArmToolRunner(Path(__file__).with_name("arm_tools.py"), Path(args.log_dir))
     page_html = render_page(pool.names, args.history_url)
-    server = MissionServer((args.host, args.port), pool, runs, armtools, page_html)
+    server = MissionServer((args.host, args.port), pool, runs, armtools, exporter, page_html)
     print(f"[console] mission console on http://{args.host}:{args.port}/")
     print(f"[console] cameras: {', '.join(pool.describe())}")
     print(f"[console] start command: {' '.join([*prefix, '<instruction>', *suffix])}")
