@@ -8,18 +8,18 @@
   Specialist VLA 报告该循环带来 62%→90% 的提升)。
 - **VLA 是手,脑在 Astra**。Astra 保留 done/give_up 出口。
 
-## 协议事实(已核实,源:RLtoken 检出)
+## 协议事实(2026-09-17 对**线上 10055 实测 + serve_rlt_inference 源码**核实)
 
-- 服务端 `run_model_server_vr0901.sh` → `run_model_server.py`(PaliGemma-3B +
-  PI fast),:10054 direct_http;RLT 路线 :10055 `umi_replay_http`(本项目用)。
-- 请求 `ModelInferenceRequest{session_id, episode_id, request_id, prompt,
-  source_observation_timestamp_ns, request_send_timestamp_ns, exteroception,
-  proprioception, last_action}`(base_inference_service.py:29)。
-- 响应二选一:`action_chunk`(每步 delta_xyz_m/delta_rpy_rad + 绝对
-  gripper_open)或 `absolute_action_chunk`。
-- `last_action` = 每臂**绝对** xyz_m/rpy_rad/gripper_open + 时间戳。
-- 异步 submit/poll(pi05_async_inference_client.py 是参照实现,
-  其 :500 处示范了 delta→AbsoluteActionChunk 的转换点)。
+- 10055 = `serve_rlt_inference`(RLT stage2 进程,用户手改版,勿以仓里
+  umi_replay 名称为准)。
+- **POST /submit**:NPZ 载荷,字段 `image0..image3`(CHW uint8)或
+  `images` 列表、`state`(本体状态,维度由 checkpoint 的 state_dim 决定)、
+  `task`(提示词)。垃圾输入直接断连——客户端必须自带容错与超时。
+- **GET /result/latest?after_request_id=N** → NPZ{request_id int64,
+  **actions float32 (20,14)**, action_format="xyz_rpy", status}。
+  20 步 × 2 臂 ×(xyz3+rpy3+gripper1),**delta EE pose** 块,gripper 绝对。
+- `state` 的确切维度/布局实现时从 checkpoint config(stage2.py 的
+  state_dim)与 `.rlt_runtime` 调试捕获(`*_state.npy`)钉死。
 
 ## 组件(新插件 `plugins/inspect-robots-vla`,import `inspect_robots_vla`)
 
