@@ -377,6 +377,7 @@ class RunManager:
         self._run: _Run | None = None
         self._spawn_count = 0
         self._last_error: str | None = None
+        self._stop_requested = False
 
     def start(
         self,
@@ -398,6 +399,7 @@ class RunManager:
             if prepare is not None:
                 prepare()
             self._spawn_count += 1
+            self._stop_requested = False
             try:
                 self._log_dir.mkdir(parents=True, exist_ok=True)
                 # The handle lives until the drain thread closes it at run end;
@@ -561,6 +563,15 @@ class RunManager:
                 snapshot["log"] = str(live)
         return snapshot
 
+    def mark_stop_requested(self) -> None:
+        """Record that the operator stopped the episode; homing is safe after."""
+        self._stop_requested = True
+
+    def homing_allowed(self) -> bool:
+        """True when no run is active, or its episode was stopped (verdict wait)."""
+        run = self.status()
+        return run.get("state") != "running" or self._stop_requested
+
     def force_end(self) -> str | None:
         """Emergency end for a wedged run: ``/stop``, terminate, then kill.
 
@@ -598,6 +609,7 @@ class RunManager:
                 "started_at": run.started_at,
                 "run_id": run.run_id,
                 "log": run.log_path,
+                "tail": list(run.tail),
             }
 
     def shutdown(self) -> None:
@@ -1007,6 +1019,7 @@ class MissionRequestHandler(BaseHTTPRequestHandler):
         elif path == "/api/status":
             status = self.server.runs.status()
             status["arm_tool"] = self.server.armtools.describe()
+            status["verdict_pending"] = self.server.runs._stop_requested
             self._send_json(200, status)
         elif path == "/api/feed":
             self._api_feed(query)
@@ -1079,6 +1092,7 @@ class MissionRequestHandler(BaseHTTPRequestHandler):
             return
         error = self.server.runs.write_line("/stop")
         if error is None:
+            self.server.runs.mark_stop_requested()
             self._send_json(200, {"ok": True})
         else:
             self._send_json(400, {"error": error})
@@ -1092,7 +1106,12 @@ class MissionRequestHandler(BaseHTTPRequestHandler):
         if not isinstance(choice, str) or choice.strip().lower() not in VERDICT_CHOICES:
             self._send_json(400, {"error": "choice must be one of: y, n, p, skip"})
             return
-        line = f"/{choice.strip().lower()}"
+        bare = choice.strip().lower()
+        # The mid-run console grammar takes /y lines, but the post-trial verdict
+        # prompt reads bare words; write the bare form, which the prompt wants
+        # (and the mid-run grammar treats as ordinary operator feedback if the
+        # episode is somehow still running).
+        line = "partial" if bare == "p" else bare
         error = self.server.runs.write_line(line)
         if error is None:
             self._send_json(200, {"ok": True})
@@ -1101,8 +1120,7 @@ class MissionRequestHandler(BaseHTTPRequestHandler):
 
     def _api_home(self) -> None:
         """Home both arms via arm_tools.py; refused while a run is active."""
-        run = self.server.runs.status()
-        error = self.server.armtools.home(run_active=run.get("state") == "running")
+        error = self.server.armtools.home(run_active=not self.server.runs.homing_allowed())
         if error is None:
             self._send_json(200, {"ok": True})
         else:
@@ -1418,6 +1436,8 @@ _PAGE_TAIL = """</div>
     <div class="panel"><h2>last actions</h2>
       <div class="panelbody" id="actionbody">no data yet</div></div>
   </div>
+  <div class="panel"><h2>run terminal (prompts appear here)</h2>
+    <div id="ptybody" class="panelbody">no output yet</div></div>
   <div class="panel"><h2>reasoning feed (newest pinned)</h2><div id="feed">no data yet</div></div>
 </section>
 <script>
@@ -1633,6 +1653,11 @@ async function pollFeed() {
     const response = await fetch("/api/feed?since=" + since);
     const feed = await response.json();
     renderFeed(feed);
+    const pty = document.getElementById("ptybody");
+    if (pty) {
+      const lines = feed.pty_tail || [];
+      pty.textContent = lines.length ? lines.join("\n") : "no output yet";
+    }
     if (typeof feed.seq === "number" && feed.seq > since) { since = feed.seq; }
   } catch (err) {
     // The status poll reports connection loss; keep the last rendered feed.
