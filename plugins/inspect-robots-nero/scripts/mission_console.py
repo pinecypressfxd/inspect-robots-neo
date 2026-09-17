@@ -227,8 +227,11 @@ class CameraPool:
 
     @property
     def names(self) -> tuple[str, ...]:
-        """Camera names in tile order (the CAMERA_DEFAULTS declaration order)."""
-        return tuple(self._cameras)
+        """Camera names in tile order (chest centered between the two arms)."""
+        order = ("left_rgbd", "chest_rgbd", "right_rgbd")
+        return tuple(name for name in order if name in self._cameras) + tuple(
+            name for name in self._cameras if name not in order
+        )
 
     def describe(self) -> list[str]:
         """One ``name=device`` string per camera, for the startup banner."""
