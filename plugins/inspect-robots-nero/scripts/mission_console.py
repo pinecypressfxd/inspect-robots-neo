@@ -1400,6 +1400,7 @@ _PAGE_TAIL = """</div>
   <input id="instruction" placeholder="instruction for the run" autocomplete="off">
   <button id="start">Start</button>
   <button id="stop">Stop</button>
+  <button id="cancel" hidden>Cancel</button>
   <button id="home">Home arms</button>
   <button id="estop" title="disable both arms and force-end the run">E-STOP</button>
   <span id="verdicts" hidden>
@@ -1422,6 +1423,7 @@ _PAGE_TAIL = """</div>
 <script>
 const startBtn = document.getElementById("start");
 const stopBtn = document.getElementById("stop");
+const cancelBtn = document.getElementById("cancel");
 const input = document.getElementById("instruction");
 const statusBox = document.getElementById("status");
 const verdicts = document.getElementById("verdicts");
@@ -1437,6 +1439,7 @@ let since = 0;
 const seenSeq = new Set();
 
 function disarm() {
+  cancelBtn.hidden = true;
   armed = false;
   startBtn.textContent = "Start";
   startBtn.classList.remove("armed");
@@ -1600,11 +1603,13 @@ startBtn.addEventListener("click", () => {
     armed = true;
     startBtn.textContent = "Confirm start — arms will move";
     startBtn.classList.add("armed");
+    cancelBtn.hidden = false;
     return;
   }
   disarm();
   post("/api/start", { instruction: input.value });
 });
+cancelBtn.addEventListener("click", disarm);
 input.addEventListener("input", disarm);
 stopBtn.addEventListener("click", () => post("/api/stop", {}));
 document.getElementById("home").addEventListener("click", () => post("/api/home", {}));
@@ -1670,6 +1675,7 @@ def build_command(namespace: argparse.Namespace) -> tuple[list[str], list[str]]:
     # CJK instruction would be parsed as a subcommand.
     prefix = ["uv", "run", "--no-sync", "inspect-robots", "run", "--instruction"]
     suffix = [
+        "--store-frames",
         "--policy",
         "agent",
         "-P",
