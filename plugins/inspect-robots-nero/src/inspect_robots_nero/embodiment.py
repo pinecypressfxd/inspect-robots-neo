@@ -34,6 +34,7 @@ from inspect_robots import (
 from inspect_robots.embodiment import RESETTABLE, SELF_PACED
 from inspect_robots.errors import EmbodimentFault
 from inspect_robots.spaces import CANONICAL_STATE_UNITS
+from inspect_robots_nero._arm import clamp_to_joint_envelope
 from inspect_robots_nero._config import (
     ACTION_DIM,
     CAMERA_DEFAULTS,
@@ -329,7 +330,7 @@ class NeroEmbodiment(EmbodimentBase):
 
         homes = {"left": np.asarray(HOME_LEFT), "right": np.asarray(HOME_RIGHT)}
         for side, home in homes.items():
-            self._arms[side].move_js(home.tolist())
+            self._arms[side].move_js(clamp_to_joint_envelope(home).tolist())
         deadline = self._clock() + self.reset_settle_timeout_s
         while self._clock() < deadline:
             settled = True
@@ -439,6 +440,8 @@ class NeroEmbodiment(EmbodimentBase):
         right_command = right_current + np.clip(
             q_solution[7:] - right_current, -self._max_joint_step, self._max_joint_step
         )
+        left_command = clamp_to_joint_envelope(left_command)
+        right_command = clamp_to_joint_envelope(right_command)
         self._arms["left"].move_js(left_command.tolist())
         self._arms["right"].move_js(right_command.tolist())
         self._last_commanded = {"left": left_command, "right": right_command}

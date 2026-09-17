@@ -13,7 +13,7 @@ import contextlib
 import time
 from collections.abc import Callable, Mapping, Sequence
 
-from inspect_robots_nero._arm import NeroArm
+from inspect_robots_nero._arm import NeroArm, clamp_to_joint_envelope
 from inspect_robots_nero._config import CAN_CHANNELS, HOME_LEFT, HOME_RIGHT
 
 HOMES: Mapping[str, Sequence[float]] = {"left": HOME_LEFT, "right": HOME_RIGHT}
@@ -73,7 +73,7 @@ def home_arms(
     for arm in arms.values():
         arm.set_position_mode()
     for side, arm in arms.items():
-        arm.move_j(list(HOMES[side]))
+        arm.move_j(clamp_to_joint_envelope(list(HOMES[side])).tolist())
     sleep(wait_s)
 
 

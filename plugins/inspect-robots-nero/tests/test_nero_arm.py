@@ -152,3 +152,22 @@ def test_enable_status_rejects_malformed_vendor_feedback() -> None:
     robot.joints_enable = [True, True]  # wrong length
     with pytest.raises(ValueError, match="7 bools"):
         arm.enable_status()
+
+
+def test_joint_envelope_sits_inside_the_firmware_limits() -> None:
+    from inspect_robots_nero._arm import joint_envelope
+    from inspect_robots_nero._config import FIRMWARE_JOINT_LIMITS
+
+    low, high = joint_envelope()
+    for index, (fw_low, fw_high) in enumerate(FIRMWARE_JOINT_LIMITS):
+        assert low[index] > fw_low and high[index] < fw_high
+
+
+def test_clamp_to_joint_envelope_trims_boundary_commands() -> None:
+    from inspect_robots_nero._arm import clamp_to_joint_envelope, joint_envelope
+
+    clamped = clamp_to_joint_envelope([3.0, -2.0, 3.0, 3.0, -3.0, 1.5, -2.0])
+    low, high = joint_envelope()
+    assert (clamped == high).all() or (clamped >= low).all()
+    assert clamped[0] == high[0]  # 3.0 rad trims to the envelope, never past it
+    assert clamped[1] == low[1]

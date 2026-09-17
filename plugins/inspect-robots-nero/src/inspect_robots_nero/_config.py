@@ -23,6 +23,22 @@ RESET_SETTLE_TOL_RAD = 0.05
 RESET_SETTLE_TIMEOUT_S = 10.0
 CAMERA_MAX_AGE_S = 0.5
 
+# Firmware per-joint limits (rad), verbatim from pyAgxArm's
+# ROBOT_JOINT_LIMIT_PRESET_RAD["nero"]. The URDF mirrors these EXACTLY, so IK
+# can converge with commands sitting on the firmware fault edge; commanding
+# past it makes the firmware drop the arm (disable = gravity fall). Every
+# commanded joint value is clamped into these limits shrunk by the margin.
+FIRMWARE_JOINT_LIMITS: tuple[tuple[float, float], ...] = (
+    (-2.705261, 2.705261),
+    (-1.745330, 1.745330),
+    (-2.757621, 2.757621),
+    (-1.012291, 2.146755),
+    (-2.757621, 2.757621),
+    (-0.733039, 0.959932),
+    (-1.570797, 1.570797),
+)
+JOINT_LIMIT_SAFETY_MARGIN_RAD = 0.05
+
 ACTION_DIM = 20
 ROT6D_BOUNDS = (-1.0, 1.0)
 # Per-control-tick safety rate limits in native units: 1 cm position, rot6d

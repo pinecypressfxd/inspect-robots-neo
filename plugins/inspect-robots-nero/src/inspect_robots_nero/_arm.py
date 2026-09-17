@@ -11,7 +11,13 @@ import time
 from collections.abc import Callable, Sequence
 from typing import Any
 
-from inspect_robots_nero._config import FIRMWARE_VERSION
+import numpy as np
+
+from inspect_robots_nero._config import (
+    FIRMWARE_JOINT_LIMITS,
+    FIRMWARE_VERSION,
+    JOINT_LIMIT_SAFETY_MARGIN_RAD,
+)
 
 # Values must match the AgxArmFactory registry keys for robot="nero",
 # comm="can" exactly (lowercase); an uppercase key fails with
@@ -31,6 +37,24 @@ _FIRMWARE_NAMES = {
     "1.21": "v121",
     "121": "v121",
 }
+
+
+def joint_envelope() -> tuple[np.ndarray, np.ndarray]:
+    """Per-joint (low, high) command envelope: firmware limits shrunk by margin."""
+    low = np.array([limit[0] + JOINT_LIMIT_SAFETY_MARGIN_RAD for limit in FIRMWARE_JOINT_LIMITS])
+    high = np.array([limit[1] - JOINT_LIMIT_SAFETY_MARGIN_RAD for limit in FIRMWARE_JOINT_LIMITS])
+    return low, high
+
+
+def clamp_to_joint_envelope(joints: Sequence[float]) -> np.ndarray:
+    """Clamp commanded joints into the envelope so the firmware never faults.
+
+    The firmware disables the arm (a gravity fall) when commanded past its
+    joint limits; IK output can sit exactly on the URDF edge, which mirrors
+    those limits, so this clamp is the last line before every wire command.
+    """
+    low, high = joint_envelope()
+    return np.clip(np.asarray(joints, dtype=np.float64), low, high)
 
 
 class NeroArm:
