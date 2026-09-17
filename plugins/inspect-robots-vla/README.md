@@ -16,6 +16,11 @@ speaking the live `serve_rlt_inference` HTTP wire (NPZ submit/poll on
   as a `umi-replay` segment whose VLA task string is the subgoal itself, and the
   planner regains control at every checkpoint, tracking abort, or time cap.
 
+## Before the first hardware run (operator, blocking)
+
+1. Probe the live service: `curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:10055/result/latest?after_request_id=0"` must answer 200 or 204.
+2. MANDATORY before any arm motion: confirm the LEFT arm is the first 7 dims of the live `(20, 14)` action chunks against a `.rlt_runtime` capture. The clamp layers cannot catch an arm swap: a left-arm target executed on the right arm stays inside every bound. Unit tests are symmetric and cannot catch this either.
+
 ## Safety
 
 > [!WARNING]
