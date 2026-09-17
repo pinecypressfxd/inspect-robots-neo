@@ -2860,7 +2860,15 @@ def _apply_instruction_sugar(argv: list[str]) -> list[str]:
     if not argv:
         return argv
     tok = argv[0].strip()
-    if tok in _SUBCOMMANDS or tok.startswith("-") or not any(ch.isspace() for ch in tok):
+    if tok in _SUBCOMMANDS or tok.startswith("-"):
+        return argv
+    sugars = any(ch.isspace() for ch in tok) or any(
+        # A space-free CJK-style instruction is still an instruction; a bare
+        # ASCII word stays reserved so mistyped subcommands never start a run.
+        not ch.isascii() and ch.isalnum()
+        for ch in tok
+    )
+    if not sugars:
         return argv
     return ["run", "--instruction", argv[0], *argv[1:]]
 

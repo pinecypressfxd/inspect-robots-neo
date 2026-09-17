@@ -8130,3 +8130,27 @@ def test_config_show_displays_the_grader_default(
     out = capsys.readouterr().out
     assert "grader" in out
     assert "vlm" in out
+
+
+def test_instruction_sugar_rewrites_whitespace_instructions() -> None:
+    assert cli._apply_instruction_sugar(["wipe the table", "--policy", "agent"]) == [
+        "run",
+        "--instruction",
+        "wipe the table",
+        "--policy",
+        "agent",
+    ]
+
+
+def test_instruction_sugar_rewrites_space_free_cjk_instructions() -> None:
+    assert cli._apply_instruction_sugar(["把杯子放到垫子上。"]) == [
+        "run",
+        "--instruction",
+        "把杯子放到垫子上。",
+    ]
+
+
+def test_instruction_sugar_leaves_bare_ascii_words_and_flags() -> None:
+    assert cli._apply_instruction_sugar(["isnpect"]) == ["isnpect"]  # mistyped subcommand
+    assert cli._apply_instruction_sugar(["--version"]) == ["--version"]
+    assert cli._apply_instruction_sugar([]) == []

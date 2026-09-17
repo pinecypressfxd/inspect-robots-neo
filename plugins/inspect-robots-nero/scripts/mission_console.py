@@ -1541,7 +1541,10 @@ def render_page(camera_names: Sequence[str], history_url: str) -> bytes:
 
 def build_command(namespace: argparse.Namespace) -> tuple[list[str], list[str]]:
     """Split the spawned eval argv into the halves around the instruction."""
-    prefix = ["uv", "run", "--no-sync", "inspect-robots"]
+    # Explicit `run --instruction` rather than the positional sugar: the sugar
+    # only fires for instructions with interior whitespace, so a space-free
+    # CJK instruction would be parsed as a subcommand.
+    prefix = ["uv", "run", "--no-sync", "inspect-robots", "run", "--instruction"]
     suffix = [
         "--policy",
         "agent",
