@@ -26,3 +26,9 @@ CHUNK_STEPS = 20
 ACTION_DIM_VLA = 14
 # The only action_format this client can decode; the live service emits it.
 ACTION_FORMAT = "xyz_rpy"
+
+# VlaPolicy defaults (plan 0084): the nero camera triple, the 20-dim EE state
+# key those cameras' checkpoint was trained against, and its control rate.
+CONTROL_HZ = 30.0
+SUBMIT_IMAGES = ("left_rgbd", "right_rgbd", "chest_rgbd")
+STATE_KEY = "eef_state"

@@ -4,17 +4,16 @@ from __future__ import annotations
 
 from typing import Any
 
-__all__ = ["umi_replay"]
+from inspect_robots_vla.policy import VlaPolicy
+
+__all__ = ["VlaPolicy", "umi_replay"]
 
 
-def umi_replay(**kwargs: Any) -> None:
-    """Registry factory for the ``umi-replay`` policy (plan 0084, task 3).
+def umi_replay(**kwargs: Any) -> VlaPolicy:
+    """Registry factory for the ``umi-replay`` policy (entry point ``umi-replay``).
 
-    Accepts (and ignores) CLI ``-P`` kwargs so the entry point is discoverable
-    while the wire client is the only implemented piece; constructing the
-    policy is the next task's deliverable.
+    Accepts the same keyword arguments as
+    [`VlaPolicy`][inspect_robots_vla.policy.VlaPolicy]; the CLI forwards each
+    ``-P key=value`` pair here.
     """
-    raise NotImplementedError(
-        "the umi-replay policy adapter lands with plan 0084 task 3; until then "
-        "the wire client is available as inspect_robots_vla._client.VlaClient"
-    )
+    return VlaPolicy(**kwargs)
