@@ -257,17 +257,21 @@ def _render_wire_replay_for(log_path: str) -> str:
         from inspect_robots._pointers import resolve_log_pointer
         from inspect_robots._wire_replay import render_wire_replay_page
 
-        log = json.loads(Path(log_path).read_text(encoding="utf-8"))
-        root = Path(log_path).resolve().parent
+        log_file = Path(log_path)
+        log = json.loads(log_file.read_text(encoding="utf-8"))
+        root = log_file.resolve().parent
         capture_dirs: list[Path] = []
         for sample in log.get("samples") or []:
             for entry in sample.get("trial_metadata") or []:
                 pointer = entry.get("wire_capture")
                 if not isinstance(pointer, str) or not pointer:
                     continue
-                calls = resolve_log_pointer(root, pointer)
+                calls = resolve_log_pointer(log_file, pointer)
                 if calls is not None:
-                    capture_dirs.append(calls.parent)
+                    # The renderer expects the RUN directory (it globs
+                    # <run>/<trial>/calls.jsonl and shares <run>/blobs), which
+                    # is two levels above the calls file.
+                    capture_dirs.append(calls.parent.parent)
         if not capture_dirs:
             return "none recorded"
         stamp = time.strftime("%Y%m%d-%H%M%S")
