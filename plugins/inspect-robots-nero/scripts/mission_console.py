@@ -196,6 +196,68 @@ def _write_pty(master_fd: int, data: bytes) -> str | None:
     return None
 
 
+class ArmToolRunner:
+    """Run arm_tools.py (home / emergency disable) in the background, one at a time."""
+
+    def __init__(self, script: Path, log_dir: Path) -> None:
+        self._prefix = [sys.executable, str(script)]
+        self._log_dir = log_dir
+        self._lock = threading.Lock()
+        self._busy = False
+        self._last = "never run"
+
+    def describe(self) -> dict[str, Any]:
+        """Status fields for the page: busy flag plus the last command's result."""
+        with self._lock:
+            return {"busy": self._busy, "last": self._last}
+
+    def home(self, run_active: bool) -> str | None:
+        """Home both arms; refused while a run is active or a tool is running."""
+        if run_active:
+            return "stop the run before homing the arms"
+        return self._spawn(["home"], "home")
+
+    def estop(self) -> str | None:
+        """Drop both arms limp immediately (always allowed)."""
+        return self._spawn(["disable", "--arm", "both", "--yes"], "estop")
+
+    def _spawn(self, args: list[str], label: str) -> str | None:
+        with self._lock:
+            if self._busy:
+                return "an arm command is already running; wait for it to finish"
+            self._busy = True
+        threading.Thread(
+            target=self._run, args=(args, label), daemon=True, name=f"arm-{label}"
+        ).start()
+        return None
+
+    def _run(self, args: list[str], label: str) -> None:
+        started = time.monotonic()
+        try:
+            log_path = self._log_dir / (
+                f"mission-console-armtool-{time.strftime('%Y%m%d-%H%M%S')}-{label}.log"
+            )
+            with log_path.open("w", encoding="utf-8") as handle:
+                done = subprocess.run(
+                    [*self._prefix, *args],
+                    stdout=handle,
+                    stderr=subprocess.STDOUT,
+                    timeout=90,
+                    check=False,
+                )
+            summary = (
+                f"{label}: exit {done.returncode} ({time.monotonic() - started:.1f}s) -> {log_path}"
+            )
+            print(f"[console] arm {summary}")
+        except (OSError, subprocess.SubprocessError) as exc:
+            summary = f"{label}: failed ({exc})"
+            print(f"[console] arm {summary}")
+        finally:
+            with self._lock:
+                self._busy = False
+                self._last = summary
+
+
 class CameraPool:
     """One lazily started ``D405Camera`` singleton per configured camera.
 
@@ -348,6 +410,7 @@ class RunManager:
                     ),
                     "w",
                     encoding="utf-8",
+                    buffering=1,  # line-buffered: a console crash must not lose run output
                 )
             except OSError as exc:
                 return self._fail_start(
@@ -497,6 +560,31 @@ class RunManager:
             if live is not None:
                 snapshot["log"] = str(live)
         return snapshot
+
+    def force_end(self) -> str | None:
+        """Emergency end for a wedged run: ``/stop``, terminate, then kill.
+
+        This is the one sanctioned departure from the pty-only control model,
+        reserved for the operator's emergency stop: a run that stopped reading
+        its terminal (the stuck-bring-up failure mode) must still end.
+        """
+        self.write_line("/stop")
+        with self._lock:
+            run = self._run
+            if run is None or run.exit_code is not None:
+                return None
+            try:
+                run.process.terminate()
+            except OSError as exc:
+                return f"could not terminate the run: {exc}"
+        try:
+            run.process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            with contextlib.suppress(OSError):
+                run.process.kill()
+            with contextlib.suppress(subprocess.TimeoutExpired):
+                run.process.wait(timeout=5)
+        return None
 
     def current(self) -> dict[str, Any] | None:
         """Snapshot of the last run for the feed and frame routes; None if never."""
@@ -917,7 +1005,9 @@ class MissionRequestHandler(BaseHTTPRequestHandler):
         if path == "/":
             self._send_bytes(200, "text/html; charset=utf-8", self.server.page_html)
         elif path == "/api/status":
-            self._send_json(200, self.server.runs.status())
+            status = self.server.runs.status()
+            status["arm_tool"] = self.server.armtools.describe()
+            self._send_json(200, status)
         elif path == "/api/feed":
             self._api_feed(query)
         else:
@@ -947,6 +1037,10 @@ class MissionRequestHandler(BaseHTTPRequestHandler):
             self._api_stop()
         elif path == "/api/verdict":
             self._api_verdict()
+        elif path == "/api/home":
+            self._api_home()
+        elif path == "/api/estop":
+            self._api_estop()
         else:
             self._send_plain(404, "not found\n")
 
@@ -1004,6 +1098,24 @@ class MissionRequestHandler(BaseHTTPRequestHandler):
             self._send_json(200, {"ok": True})
         else:
             self._send_json(400, {"error": error})
+
+    def _api_home(self) -> None:
+        """Home both arms via arm_tools.py; refused while a run is active."""
+        run = self.server.runs.status()
+        error = self.server.armtools.home(run_active=run.get("state") == "running")
+        if error is None:
+            self._send_json(200, {"ok": True})
+        else:
+            self._send_json(400, {"error": error})
+
+    def _api_estop(self) -> None:
+        """Emergency stop: force-end any active run, then drop the arms limp."""
+        errors = [self.server.runs.force_end(), self.server.armtools.estop()]
+        messages = [item for item in errors if item is not None]
+        if messages:
+            self._send_json(400, {"error": "; ".join(messages)})
+        else:
+            self._send_json(200, {"ok": True})
 
     def _request_allowed(self) -> bool:
         """Whether the request is addressed to this console, not a foreign origin.
@@ -1202,12 +1314,18 @@ class MissionServer(ThreadingHTTPServer):
     """Threading HTTP server carrying the camera pool, run manager, and page."""
 
     def __init__(
-        self, address: tuple[str, int], pool: CameraPool, runs: RunManager, page_html: bytes
+        self,
+        address: tuple[str, int],
+        pool: CameraPool,
+        runs: RunManager,
+        armtools: ArmToolRunner,
+        page_html: bytes,
     ) -> None:
         """Bind ``address``; requests are served by MissionRequestHandler."""
         super().__init__(address, MissionRequestHandler)
         self.pool = pool
         self.runs = runs
+        self.armtools = armtools
         self.feed = RunFeed()
         self.page_html = page_html
         host = address[0].lower()
@@ -1238,6 +1356,8 @@ _PAGE_HEAD = """<!doctype html>
   .cams figcaption { font-size: 12px; padding: 3px 6px; color: #9aa7b4; background: #171d24; }
   .cams figcaption .mode { float: right; color: #5f7186; }
   .controls { display: flex; gap: 8px; padding: 8px 16px; align-items: center; flex-wrap: wrap; }
+  #estop { background: #b00; color: #fff; font-weight: bold; }
+  #home:disabled { opacity: 0.5; }
   #instruction { flex: 1; min-width: 260px; padding: 8px; background: #171d24; color: inherit;
                  border: 1px solid #2a3340; border-radius: 4px; }
   button { padding: 8px 14px; font-size: 14px; border: 1px solid #2a3340; border-radius: 4px;
@@ -1280,6 +1400,8 @@ _PAGE_TAIL = """</div>
   <input id="instruction" placeholder="instruction for the run" autocomplete="off">
   <button id="start">Start</button>
   <button id="stop">Stop</button>
+  <button id="home">Home arms</button>
+  <button id="estop" title="disable both arms and force-end the run">E-STOP</button>
   <span id="verdicts" hidden>
     <button data-choice="y">verdict y</button>
     <button data-choice="n">verdict n</button>
@@ -1485,6 +1607,8 @@ startBtn.addEventListener("click", () => {
 });
 input.addEventListener("input", disarm);
 stopBtn.addEventListener("click", () => post("/api/stop", {}));
+document.getElementById("home").addEventListener("click", () => post("/api/home", {}));
+document.getElementById("estop").addEventListener("click", () => post("/api/estop", {}));
 for (const btn of verdicts.querySelectorAll("button")) {
   btn.addEventListener("click", () => post("/api/verdict", { choice: btn.dataset.choice }));
 }
@@ -1659,8 +1783,9 @@ def main(argv: list[str] | None = None) -> int:
     pool = CameraPool(overrides)
     prefix, suffix = build_command(args)
     runs = RunManager(prefix, suffix, Path(args.log_dir))
+    armtools = ArmToolRunner(Path(__file__).with_name("arm_tools.py"), Path(args.log_dir))
     page_html = render_page(pool.names, args.history_url)
-    server = MissionServer((args.host, args.port), pool, runs, page_html)
+    server = MissionServer((args.host, args.port), pool, runs, armtools, page_html)
     print(f"[console] mission console on http://{args.host}:{args.port}/")
     print(f"[console] cameras: {', '.join(pool.describe())}")
     print(f"[console] start command: {' '.join([*prefix, '<instruction>', *suffix])}")
