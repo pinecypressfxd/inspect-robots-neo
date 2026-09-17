@@ -1205,6 +1205,7 @@ source = { editable = "plugins/inspect-robots-vla" }
 dependencies = [
     { name = "httpx" },
     { name = "inspect-robots" },
+    { name = "inspect-robots-agent" },
     { name = "numpy", version = "2.2.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "numpy", version = "2.4.6", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
     { name = "scipy", version = "1.15.3", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
@@ -1224,6 +1225,7 @@ dev = [
 requires-dist = [
     { name = "httpx", specifier = ">=0.27" },
     { name = "inspect-robots", editable = "." },
+    { name = "inspect-robots-agent", editable = "plugins/inspect-robots-agent" },
     { name = "mypy", marker = "extra == 'dev'", specifier = ">=1.11" },
     { name = "numpy", specifier = ">=1.24" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8.0" },

@@ -1,4 +1,12 @@
-"""VLA policies for Inspect Robots: pure ``umi-replay`` and the Astra hybrid."""
+"""VLA policies for Inspect Robots: pure ``umi-replay`` and the Astra hybrid.
+
+The pure adapter lives in
+[`policy`][inspect_robots_vla.policy] and the planner-executor hybrid in
+[`hybrid`][inspect_robots_vla.hybrid] (registered as ``hybrid`` through its
+own entry point). The hybrid module is reached lazily, by entry point or the
+``__getattr__`` below, so importing this package for the ``umi-replay``
+policy alone never pulls the agent plugin the hybrid's planner needs.
+"""
 
 from __future__ import annotations
 
@@ -17,3 +25,12 @@ def umi_replay(**kwargs: Any) -> VlaPolicy:
     ``-P key=value`` pair here.
     """
     return VlaPolicy(**kwargs)
+
+
+def __getattr__(name: str) -> Any:
+    """Resolve the hybrid exports lazily (PEP 562); see the module docstring."""
+    if name in {"HybridPolicy", "hybrid_policy"}:
+        from inspect_robots_vla import hybrid
+
+        return getattr(hybrid, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
