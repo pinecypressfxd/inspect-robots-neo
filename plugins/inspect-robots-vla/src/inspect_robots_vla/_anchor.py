@@ -144,6 +144,7 @@ def tracking_error(target20: np.ndarray, observed20: np.ndarray) -> tuple[float,
         rot_deg = max(rot_deg, float(np.degrees(relative.magnitude())))
     return pos_m, rot_deg
 
+
 def eef_state_to_umi_rpy_state(eef_state: np.ndarray) -> np.ndarray:
     """Convert the embodiment 20-dim [xyz, rot6d, grip]x2 into the VLA 14-dim.
 
@@ -153,11 +154,13 @@ def eef_state_to_umi_rpy_state(eef_state: np.ndarray) -> np.ndarray:
     """
     if eef_state.shape != (20,):
         raise VlaServiceError(f"eef_state must hold 20 values, got {eef_state.shape}")
+
     def arm(state: np.ndarray) -> np.ndarray:
         xyz = state[0:3]
         rpy = rot6d_to_rpy(state[3:9])
         grip = float(state[9])
         return np.concatenate([xyz, rpy, [grip]])
+
     left = arm(eef_state[0:10])
     right = arm(eef_state[10:20])
     out = np.concatenate([left, right]).astype(np.float32)

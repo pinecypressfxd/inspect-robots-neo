@@ -255,7 +255,11 @@ def test_state_fallback_uses_the_last_commanded_target() -> None:
 
     policy.act(_observation(with_state=False))
 
-    np.testing.assert_allclose(fake.calls[1].state, expected_last, atol=1e-6)
+    from inspect_robots_vla._anchor import eef_state_to_umi_rpy_state
+
+    np.testing.assert_allclose(
+        fake.calls[1].state, eef_state_to_umi_rpy_state(expected_last), atol=1e-6
+    )
 
 
 def test_first_call_without_state_key_raises_policy_error() -> None:
