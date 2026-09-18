@@ -173,9 +173,10 @@ def test_act_submits_prompt_state_images_and_anchors_the_chunk() -> None:
 
     call = fake.calls[0]
     assert call.task == "pick up the cup"
-    from inspect_robots_vla._anchor import eef_state_to_umi_rpy_state
+    from inspect_robots_vla._anchor import eef_state_to_umi_rpy_state, umi_last_action_state
 
-    np.testing.assert_allclose(call.state, eef_state_to_umi_rpy_state(state), atol=1e-6)
+    expected = umi_last_action_state(eef_state_to_umi_rpy_state(state))
+    np.testing.assert_allclose(call.state, expected, atol=1e-6)
     assert list(call.images) == ["chest_rgbd", "left_rgbd", "right_rgbd"]  # sorted
     for name, frame in call.images.items():
         np.testing.assert_array_equal(frame, _DEFAULT_FRAMES[name])
@@ -255,10 +256,12 @@ def test_state_fallback_uses_the_last_commanded_target() -> None:
 
     policy.act(_observation(with_state=False))
 
-    from inspect_robots_vla._anchor import eef_state_to_umi_rpy_state
+    from inspect_robots_vla._anchor import eef_state_to_umi_rpy_state, umi_last_action_state
 
+    prev14 = eef_state_to_umi_rpy_state(_eef_state())
+    current14 = eef_state_to_umi_rpy_state(expected_last)
     np.testing.assert_allclose(
-        fake.calls[1].state, eef_state_to_umi_rpy_state(expected_last), atol=1e-6
+        fake.calls[1].state, umi_last_action_state(current14, prev14), atol=1e-6
     )
 
 

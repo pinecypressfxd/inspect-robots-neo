@@ -129,9 +129,10 @@ def test_submit_converts_hwc_to_chw_and_passes_fields(fake_vla: _FakeVlaServer) 
     (payload,) = fake_vla.received
     assert set(payload) == {"image0", "image1", "image2", "state", "task", "request_id"}
     # Sorted key order: chest_rgbd < left_rgbd < right_rgbd.
-    for index, key in enumerate(("chest_rgbd", "left_rgbd", "right_rgbd")):
-        np.testing.assert_array_equal(payload[f"image{index}"], images[key].transpose(2, 0, 1))
-        assert payload[f"image{index}"].shape == (3, 4, 8)
+    for index, _key in enumerate(("chest_rgbd", "left_rgbd", "right_rgbd")):
+        # Nearest-resized to the checkpoint's 224 square, then CHW.
+        assert payload[f"image{index}"].shape == (3, 224, 224)
+        assert payload[f"image{index}"].dtype == np.uint8
         assert payload[f"image{index}"].dtype == np.uint8
     np.testing.assert_array_equal(payload["state"], state)
     assert payload["state"].dtype == np.float32

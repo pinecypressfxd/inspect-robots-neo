@@ -24,6 +24,10 @@ MAX_SKILL_SECONDS = 60.0
 CHUNK_STEPS = 20
 # Per arm xyz (3) + rpy (3) + gripper (1), two arms.
 ACTION_DIM_VLA = 14
+#: The checkpoint (PaliGemma-224) expects square 224x224 images; the
+#: client resizes each camera frame before packing (verified live 2026-09-18:
+#: 224 answers 200, native 480x640 fails inside the model).
+VLA_IMAGE_SIZE = 224
 # The only action_format this client can decode; the live service emits it.
 ACTION_FORMAT = "xyz_rpy"
 

@@ -34,7 +34,12 @@ from inspect_robots import (
 )
 from inspect_robots.errors import ConfigError, PolicyError
 
-from ._anchor import EEF_STATE_DIM, anchor_chunk, eef_state_to_umi_rpy_state
+from ._anchor import (
+    EEF_STATE_DIM,
+    anchor_chunk,
+    eef_state_to_umi_rpy_state,
+    umi_last_action_state,
+)
 from ._client import VlaChunk, VlaClient, VlaServiceError
 from ._config import (
     CHUNK_STEPS,
@@ -217,6 +222,7 @@ class VlaPolicy(PolicyBase):
         self._request_id = time.time_ns()
         self._scene_instruction: str | None = None
         self._last_target: np.ndarray | None = None
+        self._prev_umi_state: np.ndarray | None = None
         self._previous_attempt_failed = False
         self._state_field: StateField | None = None
         self._dim_labels: tuple[str, ...] | None = None
@@ -256,6 +262,7 @@ class VlaPolicy(PolicyBase):
         """
         self._scene_instruction = scene.instruction or None
         self._last_target = None
+        self._prev_umi_state = None
 
     def act(self, observation: Observation) -> ActionChunk:
         """One round trip: frames, state, and task out; anchored targets back."""
@@ -274,7 +281,12 @@ class VlaPolicy(PolicyBase):
         for _ in range(attempts):
             try:
                 chunk = self._client.infer(
-                    images, eef_state_to_umi_rpy_state(eef_state), task, request_id=request_id
+                    images,
+                    umi_last_action_state(
+                        eef_state_to_umi_rpy_state(eef_state), self._prev_umi_state
+                    ),
+                    task,
+                    request_id=request_id,
                 )
                 break
             except VlaServiceError as exc:
@@ -301,6 +313,7 @@ class VlaPolicy(PolicyBase):
                 f"be anchored: {exc}"
             ) from exc
         self._last_target = targets[-1]
+        self._prev_umi_state = eef_state_to_umi_rpy_state(eef_state)
         return ActionChunk(
             actions=[Action(data=row) for row in targets],
             control_hz=self._control_hz,

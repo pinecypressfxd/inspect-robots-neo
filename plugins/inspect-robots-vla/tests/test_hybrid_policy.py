@@ -256,10 +256,12 @@ def test_planning_executing_deciding_done_full_path() -> None:
 
     # EXECUTING: the subgoal goes to the VLA verbatim, anchored on the state.
     assert vla.calls[0].task == "lift the cup"
-    from inspect_robots_vla._anchor import eef_state_to_umi_rpy_state
+    from inspect_robots_vla._anchor import eef_state_to_umi_rpy_state, umi_last_action_state
 
     np.testing.assert_allclose(
-        vla.calls[0].state, eef_state_to_umi_rpy_state(_eef_state()), atol=1e-6
+        vla.calls[0].state,
+        umi_last_action_state(eef_state_to_umi_rpy_state(_eef_state())),
+        atol=1e-6,
     )
     assert list(vla.calls[0].images) == ["chest_rgbd", "left_rgbd", "right_rgbd"]
     assert len(chunk) == 2

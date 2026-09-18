@@ -145,6 +145,24 @@ def tracking_error(target20: np.ndarray, observed20: np.ndarray) -> tuple[float,
     return pos_m, rot_deg
 
 
+def umi_last_action_state(
+    current14: np.ndarray, previous14: np.ndarray | None = None
+) -> np.ndarray:
+    """Flatten [previous, current] 14-dim XYZ+RPY states into the 28-dim input.
+
+    "
+        The checkpoint runs umi_state_mode="last_action" with history 2: it
+        expects the previous frame followed by the current frame and relativizes
+        internally. A missing previous frame duplicates the current one, matching
+        the training pipeline's index clipping.
+    """
+    prev = current14 if previous14 is None else np.asarray(previous14, dtype=np.float32)
+    out = np.concatenate([prev, current14]).astype(np.float32)
+    if out.shape != (28,):
+        raise VlaServiceError(f"umi last-action state must hold 28 values, got {out.shape}")
+    return out
+
+
 def eef_state_to_umi_rpy_state(eef_state: np.ndarray) -> np.ndarray:
     """Convert the embodiment 20-dim [xyz, rot6d, grip]x2 into the VLA 14-dim.
 

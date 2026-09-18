@@ -47,7 +47,13 @@ from inspect_robots import (
 )
 from inspect_robots.errors import ConfigError, PolicyError
 
-from ._anchor import EEF_STATE_DIM, anchor_chunk, eef_state_to_umi_rpy_state, tracking_error
+from ._anchor import (
+    EEF_STATE_DIM,
+    anchor_chunk,
+    eef_state_to_umi_rpy_state,
+    tracking_error,
+    umi_last_action_state,
+)
 from ._client import VlaClient, VlaServiceError
 from ._config import (
     CHECKPOINT_INTERVAL_S,
@@ -563,9 +569,9 @@ class HybridPolicy(PolicyBase):
         failure: VlaServiceError | None = None
         for _ in range(attempts):
             try:
-                chunk = self._vla.infer(
-                    images, eef_state_to_umi_rpy_state(eef_state), subgoal, request_id=request_id
-                )
+                current14 = eef_state_to_umi_rpy_state(eef_state)
+                state28 = umi_last_action_state(current14, self._prev_umi_state)
+                chunk = self._vla.infer(images, state28, subgoal, request_id=request_id)
                 break
             except VlaServiceError as exc:
                 failure = exc
@@ -821,6 +827,7 @@ class HybridPolicy(PolicyBase):
         return {name: observation.images[name] for name in sorted(self._submit_images)}
 
     def _rearm_trial_state(self) -> None:
+        self._prev_umi_state = None
         """Reset every per-trial mutable field; called from __init__ and reset."""
         self._phase = _Phase.PLANNING
         self._messages = []

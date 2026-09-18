@@ -34,6 +34,7 @@ import numpy as np
 from ._config import (
     ACTION_DIM_VLA,
     ACTION_FORMAT,
+    VLA_IMAGE_SIZE,
     VLA_POLL_INTERVAL_S,
     VLA_POLL_TIMEOUT_S,
     VLA_SUBMIT_TIMEOUT_S,
@@ -95,7 +96,7 @@ def _encode_payload(
                     f"invalid /submit payload: image {key!r} must be HWC uint8 RGB, "
                     f"got shape {frame.shape} dtype {frame.dtype}"
                 )
-            fields[f"image{index}"] = frame.transpose(2, 0, 1)
+            fields[f"image{index}"] = _resize_nearest(frame, VLA_IMAGE_SIZE).transpose(2, 0, 1)
     buffer = io.BytesIO()
     np.savez(buffer, **fields)
     return buffer.getvalue()
@@ -130,6 +131,41 @@ def _decode_chunk(base_url: str, content: bytes) -> VlaChunk:
             f"expected (m, {ACTION_DIM_VLA})"
         )
     return VlaChunk(request_id=request_id, deltas=actions)
+
+
+def _error_detail(body: bytes) -> str:
+    """Decode the service's NPZ error field, empty when the body is not NPZ."""
+    import io
+
+    try:
+        with np.load(io.BytesIO(body), allow_pickle=False) as data:
+            if "error" in data.files:
+                return f"; {data['error'].item()!s}"
+    except Exception:
+        pass
+    return ""
+
+
+def _resize_nearest(frame: np.ndarray, size: int) -> np.ndarray:
+    """Nearest-neighbor resize an HWC uint8 frame to (size, size)."""
+    height, width = frame.shape[:2]
+    rows = (np.linspace(0, height - 1, size)).astype(np.intp)
+    cols = (np.linspace(0, width - 1, size)).astype(np.intp)
+    return frame[rows][:, cols]
+
+
+def _has_request_id(body: bytes) -> bool:
+    """True when the body is a valid NPZ carrying a request_id slot.
+
+    A valid NPZ without the slot is the service's "nothing newer yet"
+    answer; an invalid body is not, and falls through to the decoder
+    which raises the undecodable error.
+    """
+    try:
+        with zipfile.ZipFile(io.BytesIO(body)) as archive:
+            return "request_id.npy" in archive.namelist()
+    except (zipfile.BadZipFile, OSError):
+        return True  # not a zip: let _decode_chunk raise the loud error
 
 
 class VlaClient:
@@ -175,7 +211,7 @@ class VlaClient:
         if not 200 <= response.status_code < 300:
             raise VlaServiceError(
                 f"VLA service at {self._base_url} answered /submit with HTTP "
-                f"{response.status_code}; {_REMEDY}"
+                f"{response.status_code}{_error_detail(response.content)}; {_REMEDY}"
             )
 
     def poll(self, after_request_id: int) -> VlaChunk | None:
@@ -194,8 +230,12 @@ class VlaClient:
         if not 200 <= response.status_code < 300:
             raise VlaServiceError(
                 f"VLA service at {self._base_url} answered /result/latest with "
-                f"HTTP {response.status_code}; {_REMEDY}"
+                f"HTTP {response.status_code}{_error_detail(response.content)}; {_REMEDY}"
             )
+        # The service answers "nothing newer than after_request_id" with a
+        # 200 and an NPZ that carries no request_id slot: that is not-ready.
+        if not _has_request_id(response.content):
+            return None
         return _decode_chunk(self._base_url, response.content)
 
     def infer(
@@ -215,7 +255,7 @@ class VlaClient:
         self.submit(images, state, task, request_id=request_id)
         deadline = time.monotonic() + self._poll_timeout_s
         while True:
-            chunk = self.poll(request_id)
+            chunk = self.poll(request_id - 1)  # the service compares strictly greater
             if chunk is not None and chunk.request_id >= request_id:
                 return chunk
             if time.monotonic() >= deadline:
