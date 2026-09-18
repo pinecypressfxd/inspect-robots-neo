@@ -527,7 +527,8 @@ class RunManager:
             except OSError as exc:
                 log_file.close()
                 return self._fail_start(rollback, f"could not allocate the run terminal: {exc}")
-            command = [*self._prefix, instruction, *self._suffix]
+            suffix = [arg.replace("__INSTRUCTION__", instruction) for arg in self._suffix]
+            command = [*self._prefix, instruction, *suffix]
             try:
                 # ValueError joins OSError: an embedded NUL byte in the
                 # instruction (or any argument) fails the exec, not the console.
@@ -1809,23 +1810,30 @@ def build_command(namespace: argparse.Namespace) -> tuple[list[str], list[str]]:
     # only fires for instructions with interior whitespace, so a space-free
     # CJK instruction would be parsed as a subcommand.
     prefix = ["uv", "run", "--no-sync", "inspect-robots", "run", "--instruction"]
-    suffix = [
+    common = [
         "--store-frames",
-        "--policy",
-        "agent",
-        "-P",
-        f"model={namespace.model}",
-        "-P",
-        f"base_url={namespace.base_url}",
-        "-P",
-        f"api_key_env={namespace.api_key_env}",
-        "-P",
-        f"max_speed_frac={namespace.max_speed_frac:g}",
         "--embodiment",
         "nero",
         "-E",
         "operator_reset_confirm=False",
     ]
+    if namespace.policy == "umi-replay":
+        # Pure VLA baseline: the same instruction is the trained prompt.
+        suffix = [*common, "--policy", "umi-replay", "-P", f"prompt=__INSTRUCTION__"]
+    else:
+        suffix = [
+            *common,
+            "--policy",
+            "agent",
+            "-P",
+            f"model={namespace.model}",
+            "-P",
+            f"base_url={namespace.base_url}",
+            "-P",
+            f"api_key_env={namespace.api_key_env}",
+            "-P",
+            f"max_speed_frac={namespace.max_speed_frac:g}",
+        ]
     return prefix, suffix
 
 
@@ -1867,6 +1875,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=DEFAULT_MAX_SPEED_FRAC,
         help="agent policy speed fraction (default: 0.05)",
+    )
+    parser.add_argument(
+        "--policy",
+        choices=["agent", "umi-replay"],
+        default="agent",
+        help="policy the spawned runs use (agent needs the LLM flags below)",
     )
     parser.add_argument(
         "--model",
