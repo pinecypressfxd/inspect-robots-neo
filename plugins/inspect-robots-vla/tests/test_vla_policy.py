@@ -177,7 +177,8 @@ def test_act_submits_prompt_state_images_and_anchors_the_chunk() -> None:
 
     expected = umi_last_action_state(eef_state_to_umi_rpy_state(state))
     np.testing.assert_allclose(call.state, expected, atol=1e-6)
-    assert list(call.images) == ["chest_rgbd", "left_rgbd", "right_rgbd"]  # sorted
+    # Slot order per the service: image0=left, image1=right, image2=chest.
+    assert list(call.images) == ["left_rgbd", "right_rgbd", "chest_rgbd"]
     for name, frame in call.images.items():
         np.testing.assert_array_equal(frame, _DEFAULT_FRAMES[name])
     assert call.request_id > 0
@@ -191,12 +192,18 @@ def test_act_submits_prompt_state_images_and_anchors_the_chunk() -> None:
     assert chunk.inference_latency_s >= 0.0
     assert chunk.meta["request_id"] == call.request_id
 
-    # Hand-checked anchoring: xyz cumsum onto the anchor, gripper absolute.
+    # Hand-checked anchoring (SE(3)): each step's delta composes onto the
+    # anchor, with the translation rotated by the anchor orientation
+    # (pitch=-90 deg maps the delta's x onto the world's z).
     rows = [np.asarray(action.data) for action in chunk.actions]
-    np.testing.assert_allclose(rows[0][0:3], (0.31, -0.10, 0.20), atol=1e-6)
-    np.testing.assert_allclose(rows[2][0:3], (0.33, -0.10, 0.20), atol=1e-6)
+    np.testing.assert_allclose(rows[0][0:3], (0.309363, -0.097104, 0.201987), atol=1e-5)
+    # Constant per-step deltas compose against the same anchor: rows repeat
+    # (per-step semantics, no cumulative drift).
+    np.testing.assert_allclose(rows[2][0:3], rows[0][0:3], atol=1e-7)
     np.testing.assert_allclose(rows[0][3:9], state[3:9], atol=1e-6)
-    np.testing.assert_allclose(rows[1][10:13], (0.26, 0.12, 0.19), atol=1e-6)
+    # The fixture's step-1 right delta is zero: row 1 stays at the anchor.
+    np.testing.assert_allclose(rows[1][10:13], (0.28, 0.12, 0.19), atol=1e-6)
+    np.testing.assert_allclose(rows[0][10:13], (0.260839, 0.122896, 0.194948), atol=1e-5)
     # Service grippers are normalized [0, 1]; the policy emits meters.
     np.testing.assert_allclose(
         [row[9] for row in rows], np.asarray((0.02, 0.03, 0.04)) * 0.09, atol=1e-6
@@ -207,14 +214,16 @@ def test_act_submits_prompt_state_images_and_anchors_the_chunk() -> None:
     assert fake.calls[1].request_id > fake.calls[0].request_id
 
 
-def test_submit_images_string_form_selects_and_sorts_cameras() -> None:
+def test_submit_images_string_form_preserves_declared_slot_order() -> None:
     fake = _FakeClient([_zero_chunk()])
     policy = umi_replay(prompt="t", submit_images="right_rgbd,left_rgbd", client=fake)
 
     policy.act(_observation())
 
     (call,) = fake.calls
-    assert list(call.images) == ["left_rgbd", "right_rgbd"]
+    # Declared order IS the wire slot order (image0 feeds the service's
+    # first camera); a sorted rewrite would scramble the slots again.
+    assert list(call.images) == ["right_rgbd", "left_rgbd"]
     np.testing.assert_array_equal(call.images["left_rgbd"], _DEFAULT_FRAMES["left_rgbd"])
 
 

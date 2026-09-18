@@ -346,7 +346,9 @@ class VlaPolicy(PolicyBase):
                 f"available: {sorted(observation.images)}.\n"
                 "fix: point -P submit_images= at cameras the embodiment provides"
             )
-        return {name: observation.images[name] for name in sorted(self._submit_images)}
+        # Declared order is the wire's slot order (left, right, chest):
+        # the service maps imageN positionally, never alphabetically.
+        return {name: observation.images[name] for name in self._submit_images}
 
     def _anchor_state(self, observation: Observation) -> np.ndarray:
         """The 20-dim EE anchor: observed, else the last commanded target."""

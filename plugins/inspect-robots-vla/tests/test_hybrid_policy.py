@@ -313,7 +313,9 @@ def test_delegate_twice_passes_each_subgoal_verbatim() -> None:
 
 def test_tracking_abort_mid_segment_reports_skill_interrupted() -> None:
     llm = _FakeLlm([_delegate("reach for the cup"), _done()])
-    vla = _FakeVla([_left_x_chunk(0.06)])
+    # SE(3) composition applies each step's delta to the anchor (not
+    # cumulative), so the per-step delta must exceed the 3 cm threshold.
+    vla = _FakeVla([_left_x_chunk(0.12)])
     policy = _policy(llm, vla)  # default checkpoint 5 s: only the abort decides
     _reset(policy)
 
@@ -322,7 +324,7 @@ def test_tracking_abort_mid_segment_reports_skill_interrupted() -> None:
 
     note = _text_of([_last_user(llm.calls[1])])
     assert "skill_interrupted" in note
-    assert "pos_err=0.0600" in note
+    assert "pos_err=0.0400" in note
     assert len(vla.calls) == 1  # the aborted segment issued no further chunk
     assert stop.actions[0].meta["request_stop"] is True
 

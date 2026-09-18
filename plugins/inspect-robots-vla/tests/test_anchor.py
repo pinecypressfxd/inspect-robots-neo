@@ -86,44 +86,30 @@ def test_zero_deltas_reproduce_the_anchor_at_every_step() -> None:
     np.testing.assert_array_equal(targets[:, 19], np.zeros(5, dtype=np.float32))
 
 
-def test_cumsum_integration_matches_hand_computed_targets() -> None:
+def test_se3_composition_matches_hand_computed_targets() -> None:
     state = _eef_state()
     deltas = np.zeros((3, ACTION_DIM_VLA))
-    # Left arm (chunk dims 0..6): xyz delta, rpy delta, gripper absolute.
-    deltas[:, 0:3] = ((0.01, 0.0, 0.0), (0.01, 0.01, 0.0), (0.0, 0.01, 0.02))
-    deltas[:, 3:6] = ((0.0, 0.0, 0.10), (0.0, 0.05, 0.0), (0.10, 0.0, 0.0))
-    deltas[:, 6] = (0.02, 0.03, 0.04)
-    # Right arm (chunk dims 7..13).
-    deltas[:, 7:10] = ((-0.02, 0.0, 0.01), (0.0, -0.02, 0.0), (0.01, 0.0, 0.0))
-    deltas[:, 10:13] = ((0.05, 0.0, 0.0), (0.0, -0.10, 0.05), (0.0, 0.0, 0.0))
-    deltas[:, 13] = (0.01, 0.01, 0.07)
-
+    deltas[:, 0] = (0.01, 0.00, 0.02)  # left xyz, in the ANCHOR's frame
+    deltas[:, 3] = (0.01, 0.0, 0.0)  # left rpy delta
+    deltas[:, 6] = (0.02, 0.03, 0.04)  # left gripper absolute (normalized)
+    deltas[:, 7] = (-0.02, 0.0, 0.0)  # right xyz
     targets = anchor_chunk(state, _chunk(deltas))
 
-    # Left xyz: anchor plus the literal cumsum (hand computed).
-    np.testing.assert_allclose(
-        targets[:, 0:3],
-        [
-            (0.31, -0.10, 0.20),
-            (0.32, -0.09, 0.20),
-            (0.32, -0.08, 0.22),
-        ],
-        atol=1e-6,
-    )
-    # Left rot6d: anchor rpy plus rpy cumsum, converted per step via scipy.
-    left_rpy = np.asarray(_LEFT_RPY) + np.cumsum(deltas[:, 3:6], axis=0)
-    expected = [_columns6(Rotation.from_euler("xyz", rpy).as_matrix()) for rpy in left_rpy]
-    np.testing.assert_allclose(targets[:, 3:9], expected, atol=1e-6)
-    # Left gripper passes through absolutely (the 0.05 anchor is ignored).
-    # Service grippers are normalized [0, 1]; outputs are meters.
+    anchor_rot = Rotation.from_euler("xyz", _LEFT_RPY).as_matrix()
+    for step in range(3):
+        # xyz: anchor + R_anchor @ delta (each step vs the anchor, no cumsum)
+        expected_xyz = np.asarray(state[0:3]) + anchor_rot @ deltas[step, 0:3]
+        np.testing.assert_allclose(targets[step, 0:3], expected_xyz, atol=1e-6)
+        # rotation: R_anchor @ R_delta
+        expected_rot = anchor_rot @ Rotation.from_euler("xyz", deltas[step, 3:6]).as_matrix()
+        expected_rot6d = np.concatenate([expected_rot[:, 0], expected_rot[:, 1]])
+        np.testing.assert_allclose(targets[step, 3:9], expected_rot6d, atol=1e-6)
+    # grippers normalized -> meters
     np.testing.assert_allclose(targets[:, 9], np.asarray((0.02, 0.03, 0.04)) * 0.09, atol=1e-6)
-    # Right arm mirrors the layout at offsets 10..19.
-    right_xyz = state[10:13] + np.cumsum(deltas[:, 7:10], axis=0)
-    np.testing.assert_allclose(targets[:, 10:13], right_xyz, atol=1e-6)
-    right_rpy = np.asarray(_RIGHT_RPY) + np.cumsum(deltas[:, 10:13], axis=0)
-    expected_right = [_columns6(Rotation.from_euler("xyz", rpy).as_matrix()) for rpy in right_rpy]
-    np.testing.assert_allclose(targets[:, 13:19], expected_right, atol=1e-6)
-    np.testing.assert_allclose(targets[:, 19], np.asarray((0.01, 0.01, 0.07)) * 0.09, atol=1e-6)
+    # right arm mirrors the layout at offsets 10..19
+    right_rot = Rotation.from_euler("xyz", _RIGHT_RPY).as_matrix()
+    expected_right = np.asarray(state[10:13]) + (right_rot @ deltas[:, 7:10].T).T
+    np.testing.assert_allclose(targets[:, 10:13], expected_right, atol=1e-6)
 
 
 def test_gripper_is_absolute_not_delta() -> None:
@@ -147,7 +133,10 @@ def test_reanchoring_on_the_same_state_accumulates_no_drift() -> None:
 
     np.testing.assert_array_equal(before, after)
     # The second chunk restarts at the anchor, not at chunk one's endpoint.
-    np.testing.assert_allclose(after[0, 0:3], state[0:3] + second.deltas[0, 0:3], atol=1e-6)
+    anchor_rot = Rotation.from_euler("xyz", _LEFT_RPY).as_matrix()
+    np.testing.assert_allclose(
+        after[0, 0:3], state[0:3] + anchor_rot @ second.deltas[0, 0:3], atol=1e-6
+    )
     assert not np.allclose(endpoint[0:3], state[0:3])
 
 

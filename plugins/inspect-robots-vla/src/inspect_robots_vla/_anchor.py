@@ -109,21 +109,32 @@ def anchor_chunk(eef_state: np.ndarray, chunk: VlaChunk) -> np.ndarray:
     """Integrate one delta chunk onto an anchor into absolute ``(m, 20)`` targets.
 
     ``eef_state`` is the embodiment 20-dim EE state observed at chunk start.
-    Per arm: xyz deltas cumsum onto the anchor positions; rpy deltas cumsum in
-    rpy space onto the anchor orientation, then convert to rot6d per step;
-    grippers pass through the chunk's absolute values (dims 6 and 13; the
-    anchor gripper is ignored). The output is float32 in the embodiment
-    layout. Raises VlaServiceError on wrong shapes, non-finite values, or
-    degenerate rot6d columns.
+    Per arm and step: the service's delta is a relative transform composed
+    onto the anchor by matrix multiplication (anchor_rot @ delta_rot for
+    orientation, anchor_xyz + anchor_rot @ delta_xyz for position -- the
+    delta translation is expressed in the anchor's own frame); grippers pass
+    through as absolute values scaled to meters. The output is float32 in
+    the embodiment layout. Raises VlaServiceError on wrong shapes,
+    non-finite values, or degenerate rot6d columns.
     """
     state = _checked_state("eef_state", eef_state)
     deltas = _checked_deltas(chunk)
     targets = np.zeros((deltas.shape[0], EEF_STATE_DIM), dtype=np.float64)
     for arm_slice, xyz_slice, rot_slice, grip_index in _ARMS:
         arm = deltas[:, arm_slice]
-        targets[:, xyz_slice] = state[xyz_slice] + np.cumsum(arm[:, 0:3], axis=0)
-        rpy = rot6d_to_rpy(state[rot_slice]) + np.cumsum(arm[:, 3:6], axis=0)
-        targets[:, rot_slice] = _rot6d_rows(rpy)
+        # Each step is a relative SE(3) transform against the chunk-start
+        # anchor, composed by matrix multiplication (the service's own
+        # relative_rpy_actions_to_absolute): the delta translation lives in
+        # the ANCHOR'S frame (R_anchor @ delta_xyz) and the rotation composes
+        # (R_anchor @ R_delta) -- never additive cumsum, which both misrotates
+        # the motion by the anchor orientation and compounds step over step.
+        anchor_rot = _rot6d_to_matrix(state[rot_slice])
+        anchor_xyz = state[xyz_slice]
+        step_mats = Rotation.from_euler("xyz", arm[:, 3:6]).as_matrix()
+        for step, (delta_mat, delta_xyz) in enumerate(zip(step_mats, arm[:, 0:3])):
+            rot = anchor_rot @ delta_mat
+            targets[step, xyz_slice] = anchor_xyz + anchor_rot @ delta_xyz
+            targets[step, rot_slice] = np.concatenate([rot[:, 0], rot[:, 1]])
         # The service's gripper is normalized [0, 1]; ours is meters.
         targets[:, grip_index] = np.clip(arm[:, 6], 0.0, 1.0) * UMI_GRIPPER_MAX_M
     return targets.astype(np.float32)
