@@ -106,3 +106,11 @@ def test_home_accepts_an_already_enabled_arm() -> None:
     home_arms(arms, wait_s=0.0, sleep=lambda _seconds: None)
     for robot in robots.values():
         assert robot.move_j_calls  # homing proceeded despite the falsy enable
+
+
+def test_home_resets_a_latched_motion_controller() -> None:
+    arms, robots = _connected_arms()
+    home_arms(arms, wait_s=0.0, sleep=lambda _seconds: None)
+    for robot in robots.values():
+        assert robot.motion_resets == 1  # homing doubles as e-stop recovery
+        assert robot.move_j_calls

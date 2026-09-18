@@ -59,6 +59,11 @@ def home_arms(
     times and then accepts the state when the per-joint flags say enabled.
     """
     for arm in arms.values():
+        # A latched e-stop (from damped_disable) makes the firmware ignore
+        # motion commands until the controller is reset; reset unconditionally
+        # so homing always doubles as the recovery path.
+        with contextlib.suppress(Exception):
+            arm.reset_motion_controller()
         if arm.enable():
             continue
         for _ in range(enable_retries):

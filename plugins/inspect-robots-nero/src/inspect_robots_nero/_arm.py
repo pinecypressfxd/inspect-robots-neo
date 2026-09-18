@@ -113,6 +113,16 @@ class NeroArm:
         assert self._robot is not None, "connect() before enable()"
         return bool(self._robot.enable())
 
+    def reset_motion_controller(self) -> None:
+        """Clear a latched motion-controller state (e-stop / damping).
+
+        ``electronic_emergency_stop`` latches; until this reset the firmware
+        silently ignores motion commands, so every recovery-from-disable path
+        (homing after an E-STOP) must reset first.
+        """
+        assert self._robot is not None, "connect() before reset_motion_controller()"
+        self._robot.reset()
+
     def electronic_emergency_stop(self) -> None:
         """Apply damping to all joints (controlled deceleration, no shock).
 
