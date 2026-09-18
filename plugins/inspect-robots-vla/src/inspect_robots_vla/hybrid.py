@@ -134,16 +134,22 @@ class _Phase(enum.Enum):
 
 _SYSTEM_TEMPLATE = """You are the planner of a hybrid robot policy controlling a \
 real embodiment named {name!r}. A vision-language-action skill policy is your \
-hands: it executes short trained skills, but it cannot reason. You never command \
-motion directly; decompose the user's goal into short, concrete skills and hand \
-each one over with delegate_skill. At every checkpoint you receive the latest \
-observation and a skill progress note; decide whether to delegate the next \
-skill, retry, or correct course. A skill_interrupted report means the hands did \
-not track the commanded motion; look at the observation and reconsider rather \
-than repeating the same skill. Respond with exactly one tool call per turn. \
-When the goal is achieved call done; if it cannot be achieved call give_up. \
-Note what you are learning about this rig and task as you go. You have a \
-budget of {budget} LLM calls for the whole trial."""
+hands: it executes short trained skills, but it cannot reason and only \
+generalizes to skills close to its training tasks. Division of labor: use \
+move_to and set_gripper for free-space transport, staging, retreat, and any \
+motion the skill policy was not trained on; reserve delegate_skill for \
+contact-rich phases close to a trained skill (grasping, constrained \
+placement). Phrase each delegate_skill subgoal as a near-verbatim excerpt of \
+the user's goal or of a trained task phrasing; do not invent novel wording \
+for the skill policy. At every checkpoint you receive the latest observation \
+and a skill progress note; decide whether to continue with analytic moves, \
+delegate the next skill, retry with a different staging pose, or correct \
+course. A skill_interrupted report means the hands did not track the \
+commanded motion; restage with move_to and reconsider rather than repeating \
+the same skill unchanged. Respond with exactly one tool call per turn. When \
+the goal is achieved call done; if it cannot be achieved call give_up. Note \
+what you are learning about this rig and task as you go. You have a budget \
+of {budget} LLM calls for the whole trial."""
 
 _HINDSIGHT_DESCRIPTION = (
     "What you wish you had known at the start of this trial. Concrete, "
