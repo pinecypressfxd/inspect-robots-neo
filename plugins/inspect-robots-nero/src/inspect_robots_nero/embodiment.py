@@ -42,6 +42,7 @@ from inspect_robots_nero._config import (
     CONTROL_HZ,
     DEFAULT_MAX_STEP,
     DIM_LABELS,
+    DISABLE_ON_CLOSE,
     DUAL_NERO_DOCS,
     GRIPPER_WIDTH_MAX_M,
     GRIPPER_WIDTH_MIN_M,
@@ -112,6 +113,7 @@ class NeroEmbodiment(EmbodimentBase):
         max_step: tuple[float | None, ...] | None = None,
         cameras: Mapping[str, str] | str | None = None,
         operator_reset_confirm: bool = True,
+        disable_on_close: bool = DISABLE_ON_CLOSE,
         reset_settle_timeout_s: float = RESET_SETTLE_TIMEOUT_S,
         camera_max_age_s: float = CAMERA_MAX_AGE_S,
         arm_factory: ArmFactory | None = None,
@@ -226,6 +228,7 @@ class NeroEmbodiment(EmbodimentBase):
         self.control_hz = float(control_hz)
         self.cameras = resolved_cameras
         self.operator_reset_confirm = operator_reset_confirm
+        self._disable_on_close = bool(disable_on_close)
         self.reset_settle_timeout_s = float(reset_settle_timeout_s)
         self.camera_max_age_s = float(camera_max_age_s)
         self._clock = clock
@@ -310,7 +313,11 @@ class NeroEmbodiment(EmbodimentBase):
         self._connected = True
 
     def _abort_bring_up(self) -> None:
-        """Tear down a partially built hardware set after a failed bring-up."""
+        """Tear down a partially built hardware set after a failed bring-up.
+
+        Arms stay enabled (holding) per ``disable_on_close``; a failed bring-up
+        must not add a gravity fall to the failure.
+        """
         for camera in self._cameras.values():
             with contextlib.suppress(Exception):
                 camera.stop()
@@ -319,7 +326,8 @@ class NeroEmbodiment(EmbodimentBase):
                 gripper.stop()
         for arm in self._arms.values():
             with contextlib.suppress(Exception):
-                arm.disable()
+                if self._disable_on_close:
+                    arm.disable()
                 arm.close()
         self._arms = {}
         self._grippers = {}
@@ -482,7 +490,12 @@ class NeroEmbodiment(EmbodimentBase):
         )
 
     def close(self) -> None:
-        """Stop cameras, detach grippers, and disable both arms (best effort each)."""
+        """Stop cameras, detach grippers, and close the CAN links.
+
+        The arms stay ENABLED and holding unless ``disable_on_close`` is set:
+        this rig has no brakes, so an automatic disable is a gravity fall; the
+        operator disables deliberately (console E-STOP or arm_tools disable).
+        """
         for camera in self._cameras.values():
             with contextlib.suppress(Exception):
                 camera.stop()
@@ -491,6 +504,7 @@ class NeroEmbodiment(EmbodimentBase):
                 gripper.stop()
         for arm in self._arms.values():
             with contextlib.suppress(Exception):
-                arm.disable()
+                if self._disable_on_close:
+                    arm.disable()
                 arm.close()
         self._connected = False

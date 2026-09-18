@@ -38,6 +38,11 @@ FIRMWARE_JOINT_LIMITS: tuple[tuple[float, float], ...] = (
     (-1.570797, 1.570797),
 )
 JOINT_LIMIT_SAFETY_MARGIN_RAD = 0.05
+#: This rig has no brakes: disable() de-energizes the joints and the arms
+#: FALL under gravity. Automatic close/abort paths therefore leave the arms
+#: ENABLED and holding by default; disabling is the operator's explicit call
+#: (mission console E-STOP or arm_tools.py disable --yes).
+DISABLE_ON_CLOSE = False
 
 ACTION_DIM = 20
 ROT6D_BOUNDS = (-1.0, 1.0)

@@ -212,6 +212,7 @@ def test_gripper_force_is_the_configured_constant() -> None:
 
 def test_close_disables_arms_and_stops_cameras() -> None:
     harness = Harness()
+    harness.embodiment._disable_on_close = True
     harness.embodiment.reset(Scene(id="s0", instruction="x"))
     harness.embodiment.close()
     for robot in harness.robots.values():
@@ -265,7 +266,7 @@ def test_partial_bring_up_failure_tears_down_and_raises_fault() -> None:
     with pytest.raises(EmbodimentFault, match="bring-up failed"):
         harness.embodiment.reset(Scene(id="s0", instruction="x"))
     for robot in harness.robots.values():
-        assert not robot.enabled
+        assert robot.enabled  # a failed bring-up must not add a gravity fall
         assert robot.disconnected
     assert harness.cameras["left_rgbd"].started and harness.cameras["left_rgbd"].stopped
     # Bring-up is incremental: the third camera was never built or started.
@@ -285,3 +286,23 @@ def test_bring_up_retry_after_failure_reenables_the_robots() -> None:
 
 def test_conformance_still_passes_when_wired() -> None:
     assert_embodiment_conformant(Harness().embodiment.info)
+
+
+def test_close_leaves_arms_enabled_by_default() -> None:
+    harness = Harness()
+    harness.embodiment.reset(Scene(id="s0", instruction="x"))
+    harness.embodiment.close()
+    for robot in harness.robots.values():
+        assert robot.enabled  # no brakes: automatic disable is a gravity fall
+        assert robot.disconnected
+    for camera in harness.cameras.values():
+        assert camera.stopped
+
+
+def test_close_disables_only_when_requested() -> None:
+    harness = Harness()
+    harness.embodiment._disable_on_close = True
+    harness.embodiment.reset(Scene(id="s0", instruction="x"))
+    harness.embodiment.close()
+    for robot in harness.robots.values():
+        assert not robot.enabled
