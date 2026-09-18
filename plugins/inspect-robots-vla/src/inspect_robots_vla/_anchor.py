@@ -22,8 +22,11 @@ from ._client import VlaChunk, VlaServiceError
 
 #: The embodiment's fully-open gripper width in meters; the service's
 #: gripper convention is normalized [0, 1].
-UMI_GRIPPER_MAX_M = 0.09
 from ._config import ACTION_DIM_VLA
+
+#: The embodiment's fully-open gripper width in meters; the service's
+#: gripper convention is normalized [0, 1].
+UMI_GRIPPER_MAX_M = 0.09
 
 #: Width of the embodiment EE state/action vector both arms share.
 EEF_STATE_DIM = 20
@@ -156,8 +159,7 @@ def umi_last_action_state(
 ) -> np.ndarray:
     """Flatten [previous, current] 14-dim XYZ+RPY states into the 28-dim input.
 
-    "
-        The checkpoint runs umi_state_mode="last_action" with history 2: it
+    The checkpoint runs umi_state_mode="last_action" with history 2: it
         expects the previous frame followed by the current frame and relativizes
         internally. A missing previous frame duplicates the current one, matching
         the training pipeline's index clipping.
