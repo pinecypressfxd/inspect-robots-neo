@@ -39,7 +39,7 @@ from ._config import (
     VLA_SUBMIT_TIMEOUT_S,
 )
 
-_NPZ_CONTENT_TYPE = "application/octet-stream"
+_NPZ_CONTENT_TYPE = "application/x-npz"
 _MIN_IMAGES = 2
 _MAX_IMAGES = 3
 _REMEDY = (

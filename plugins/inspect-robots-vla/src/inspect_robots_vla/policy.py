@@ -34,7 +34,7 @@ from inspect_robots import (
 )
 from inspect_robots.errors import ConfigError, PolicyError
 
-from ._anchor import EEF_STATE_DIM, anchor_chunk
+from ._anchor import EEF_STATE_DIM, anchor_chunk, eef_state_to_umi_rpy_state
 from ._client import VlaChunk, VlaClient, VlaServiceError
 from ._config import (
     CHUNK_STEPS,
@@ -273,7 +273,9 @@ class VlaPolicy(PolicyBase):
         failure: VlaServiceError | None = None
         for _ in range(attempts):
             try:
-                chunk = self._client.infer(images, eef_state, task, request_id=request_id)
+                chunk = self._client.infer(
+                    images, eef_state_to_umi_rpy_state(eef_state), task, request_id=request_id
+                )
                 break
             except VlaServiceError as exc:
                 failure = exc

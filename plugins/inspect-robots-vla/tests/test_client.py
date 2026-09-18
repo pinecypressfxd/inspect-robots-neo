@@ -95,7 +95,7 @@ class _FakeVlaHandler(BaseHTTPRequestHandler):
             self.end_headers()
             return
         self.send_response(200)
-        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Type", "application/x-npz")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -137,7 +137,7 @@ def test_submit_converts_hwc_to_chw_and_passes_fields(fake_vla: _FakeVlaServer) 
     assert payload["state"].dtype == np.float32
     assert str(payload["task"].item()) == "pick up the cup"
     assert int(payload["request_id"].item()) == 5
-    assert fake_vla.content_types == ["application/octet-stream"]
+    assert fake_vla.content_types == ["application/x-npz"]
 
 
 def test_submit_without_images_omits_image_fields(fake_vla: _FakeVlaServer) -> None:

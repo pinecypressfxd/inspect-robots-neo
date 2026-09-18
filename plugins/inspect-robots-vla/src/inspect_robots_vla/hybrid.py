@@ -47,7 +47,7 @@ from inspect_robots import (
 )
 from inspect_robots.errors import ConfigError, PolicyError
 
-from ._anchor import EEF_STATE_DIM, anchor_chunk, tracking_error
+from ._anchor import EEF_STATE_DIM, anchor_chunk, eef_state_to_umi_rpy_state, tracking_error
 from ._client import VlaClient, VlaServiceError
 from ._config import (
     CHECKPOINT_INTERVAL_S,
@@ -563,7 +563,9 @@ class HybridPolicy(PolicyBase):
         failure: VlaServiceError | None = None
         for _ in range(attempts):
             try:
-                chunk = self._vla.infer(images, eef_state, subgoal, request_id=request_id)
+                chunk = self._vla.infer(
+                    images, eef_state_to_umi_rpy_state(eef_state), subgoal, request_id=request_id
+                )
                 break
             except VlaServiceError as exc:
                 failure = exc
