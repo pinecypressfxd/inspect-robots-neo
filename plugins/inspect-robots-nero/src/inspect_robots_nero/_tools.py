@@ -96,7 +96,7 @@ def disable_arms(
     pending = dict(arms)
     while pending and clock() < deadline:
         for side, arm in list(pending.items()):
-            arm.disable()
+            arm.damped_disable()
             status = arm.enable_status()
             if status is not None and not any(status):
                 del pending[side]

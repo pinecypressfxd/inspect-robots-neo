@@ -64,6 +64,7 @@ def test_disable_arms_polls_until_all_joints_report_limp() -> None:
     assert sleeps
     for robot in robots.values():
         assert not robot.enabled
+        assert robot.damped_stops >= 1  # damping precedes every disable attempt
 
 
 def test_disable_arms_times_out_when_a_joint_stays_enabled() -> None:

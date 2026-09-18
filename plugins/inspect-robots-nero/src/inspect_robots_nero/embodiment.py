@@ -327,7 +327,7 @@ class NeroEmbodiment(EmbodimentBase):
         for arm in self._arms.values():
             with contextlib.suppress(Exception):
                 if self._disable_on_close:
-                    arm.disable()
+                    arm.damped_disable()
                 arm.close()
         self._arms = {}
         self._grippers = {}
@@ -505,6 +505,6 @@ class NeroEmbodiment(EmbodimentBase):
         for arm in self._arms.values():
             with contextlib.suppress(Exception):
                 if self._disable_on_close:
-                    arm.disable()
+                    arm.damped_disable()
                 arm.close()
         self._connected = False

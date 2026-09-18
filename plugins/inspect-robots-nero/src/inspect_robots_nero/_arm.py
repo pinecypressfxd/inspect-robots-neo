@@ -7,6 +7,7 @@ with the vendor object injectable for tests.
 
 from __future__ import annotations
 
+import contextlib
 import time
 from collections.abc import Callable, Sequence
 from typing import Any
@@ -111,6 +112,27 @@ class NeroArm:
         """Enable the arm's motors."""
         assert self._robot is not None, "connect() before enable()"
         return bool(self._robot.enable())
+
+    def electronic_emergency_stop(self) -> None:
+        """Apply damping to all joints (controlled deceleration, no shock).
+
+        The firmware raises joint kd so any subsequent motion (including the
+        gravity fall after disable) is resisted; this is the rig's slow-fall
+        primitive and must precede every deliberate disable.
+        """
+        assert self._robot is not None, "connect() before electronic_emergency_stop()"
+        self._robot.electronic_emergency_stop()
+
+    def damped_disable(self, *, settle_s: float = 0.2) -> bool:
+        """Damp all joints, let the damping take hold, then disable the motors.
+
+        Disabling an un-damped, brake-less arm is a free fall; the damping
+        first turns that fall into a slow, shock-free descent.
+        """
+        with contextlib.suppress(Exception):
+            self.electronic_emergency_stop()
+            self._sleep(settle_s)
+        return self.disable()
 
     def disable(self) -> bool:
         """Disable the arm's motors."""

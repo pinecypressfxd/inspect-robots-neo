@@ -44,6 +44,7 @@ class FakeAgxRobot:
         self.mode: str | None = None
         self.move_js_calls: list[tuple[float, ...]] = []
         self.move_j_calls: list[tuple[float, ...]] = []
+        self.damped_stops = 0
         # None: derive the per-joint enable flags from `enabled`; a list lets
         # tests script joints that lag behind (or never confirm) a disable.
         self.joints_enable: list[bool] | None = None
@@ -67,6 +68,9 @@ class FakeAgxRobot:
     def disable(self) -> bool:
         self.enabled = False
         return True
+
+    def electronic_emergency_stop(self) -> None:
+        self.damped_stops += 1
 
     def set_speed_percent(self, percent: int) -> None:
         self.speed = int(percent)

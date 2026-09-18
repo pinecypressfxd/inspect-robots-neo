@@ -171,3 +171,13 @@ def test_clamp_to_joint_envelope_trims_boundary_commands() -> None:
     assert (clamped == high).all() or (clamped >= low).all()
     assert clamped[0] == high[0]  # 3.0 rad trims to the envelope, never past it
     assert clamped[1] == low[1]
+
+
+def test_damped_disable_damps_before_disabling() -> None:
+    robot = FakeAgxRobot()
+    arm = NeroArm("left", "can_left", robot=robot, sleep=lambda _s: None)
+    arm.connect()
+    arm.enable()
+    assert arm.damped_disable() is True
+    assert robot.damped_stops == 1  # damping sent before the disable
+    assert not robot.enabled
