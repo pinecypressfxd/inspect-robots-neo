@@ -197,8 +197,9 @@ def test_act_submits_prompt_state_images_and_anchors_the_chunk() -> None:
     np.testing.assert_allclose(rows[2][0:3], (0.33, -0.10, 0.20), atol=1e-6)
     np.testing.assert_allclose(rows[0][3:9], state[3:9], atol=1e-6)
     np.testing.assert_allclose(rows[1][10:13], (0.26, 0.12, 0.19), atol=1e-6)
-    np.testing.assert_array_equal(
-        [row[9] for row in rows], np.asarray((0.02, 0.03, 0.04), dtype=np.float32)
+    # Service grippers are normalized [0, 1]; the policy emits meters.
+    np.testing.assert_allclose(
+        [row[9] for row in rows], np.asarray((0.02, 0.03, 0.04)) * 0.09, atol=1e-6
     )
 
     # The next inference carries a strictly greater request id.

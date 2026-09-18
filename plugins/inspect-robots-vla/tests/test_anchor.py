@@ -115,14 +115,15 @@ def test_cumsum_integration_matches_hand_computed_targets() -> None:
     expected = [_columns6(Rotation.from_euler("xyz", rpy).as_matrix()) for rpy in left_rpy]
     np.testing.assert_allclose(targets[:, 3:9], expected, atol=1e-6)
     # Left gripper passes through absolutely (the 0.05 anchor is ignored).
-    np.testing.assert_array_equal(targets[:, 9], np.asarray((0.02, 0.03, 0.04), dtype=np.float32))
+    # Service grippers are normalized [0, 1]; outputs are meters.
+    np.testing.assert_allclose(targets[:, 9], np.asarray((0.02, 0.03, 0.04)) * 0.09, atol=1e-6)
     # Right arm mirrors the layout at offsets 10..19.
     right_xyz = state[10:13] + np.cumsum(deltas[:, 7:10], axis=0)
     np.testing.assert_allclose(targets[:, 10:13], right_xyz, atol=1e-6)
     right_rpy = np.asarray(_RIGHT_RPY) + np.cumsum(deltas[:, 10:13], axis=0)
     expected_right = [_columns6(Rotation.from_euler("xyz", rpy).as_matrix()) for rpy in right_rpy]
     np.testing.assert_allclose(targets[:, 13:19], expected_right, atol=1e-6)
-    np.testing.assert_array_equal(targets[:, 19], np.asarray((0.01, 0.01, 0.07), dtype=np.float32))
+    np.testing.assert_allclose(targets[:, 19], np.asarray((0.01, 0.01, 0.07)) * 0.09, atol=1e-6)
 
 
 def test_gripper_is_absolute_not_delta() -> None:
@@ -131,8 +132,8 @@ def test_gripper_is_absolute_not_delta() -> None:
     deltas[:, 6] = (0.02, 0.08)
     deltas[:, 13] = (0.01, 0.03)
     targets = anchor_chunk(state, _chunk(deltas))
-    np.testing.assert_array_equal(targets[:, 9], np.asarray((0.02, 0.08), dtype=np.float32))
-    np.testing.assert_array_equal(targets[:, 19], np.asarray((0.01, 0.03), dtype=np.float32))
+    np.testing.assert_allclose(targets[:, 9], np.asarray((0.02, 0.08)) * 0.09, atol=1e-6)
+    np.testing.assert_allclose(targets[:, 19], np.asarray((0.01, 0.03)) * 0.09, atol=1e-6)
 
 
 def test_reanchoring_on_the_same_state_accumulates_no_drift() -> None:

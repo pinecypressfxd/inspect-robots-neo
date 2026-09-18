@@ -34,6 +34,7 @@ import numpy as np
 from ._config import (
     ACTION_DIM_VLA,
     ACTION_FORMAT,
+    VLA_CAMERA_SLOTS,
     VLA_IMAGE_SIZE,
     VLA_POLL_INTERVAL_S,
     VLA_POLL_TIMEOUT_S,
@@ -89,7 +90,13 @@ def _encode_payload(
                 f"invalid /submit payload: expected 2..3 images, got {len(images)} "
                 f"({sorted(images) if images else 'none'})"
             )
-        for index, key in enumerate(sorted(images)):
+        # Slot semantics come from the service: image0=left, image1=right,
+        # image2=chest (serve_rlt_inference._image_keys_from_request); the
+        # cameras present are mapped onto that order, never alphabetical.
+        ordered = [name for name in VLA_CAMERA_SLOTS if name in images] + sorted(
+            set(images) - set(VLA_CAMERA_SLOTS)
+        )
+        for index, key in enumerate(ordered):
             frame = np.asarray(images[key])
             if frame.ndim != 3 or frame.dtype != np.uint8:
                 raise VlaServiceError(

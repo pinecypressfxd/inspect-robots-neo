@@ -28,6 +28,10 @@ ACTION_DIM_VLA = 14
 #: client resizes each camera frame before packing (verified live 2026-09-18:
 #: 224 answers 200, native 480x640 fails inside the model).
 VLA_IMAGE_SIZE = 224
+#: The service's slot semantics when the checkpoint config declares no
+# image_features (verified in serve_rlt_inference._image_keys_from_request):
+# image0=left, image1=right, image2=chest. NOT alphabetical.
+VLA_CAMERA_SLOTS: tuple[str, ...] = ("left_rgbd", "right_rgbd", "chest_rgbd")
 # The only action_format this client can decode; the live service emits it.
 ACTION_FORMAT = "xyz_rpy"
 

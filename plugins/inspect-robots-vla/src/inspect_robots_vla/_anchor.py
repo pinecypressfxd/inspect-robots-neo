@@ -15,9 +15,14 @@ across chunks.
 from __future__ import annotations
 
 import numpy as np
+
 from scipy.spatial.transform import Rotation
 
 from ._client import VlaChunk, VlaServiceError
+
+#: The embodiment's fully-open gripper width in meters; the service's
+#: gripper convention is normalized [0, 1].
+UMI_GRIPPER_MAX_M = 0.09
 from ._config import ACTION_DIM_VLA
 
 #: Width of the embodiment EE state/action vector both arms share.
@@ -117,7 +122,8 @@ def anchor_chunk(eef_state: np.ndarray, chunk: VlaChunk) -> np.ndarray:
         targets[:, xyz_slice] = state[xyz_slice] + np.cumsum(arm[:, 0:3], axis=0)
         rpy = rot6d_to_rpy(state[rot_slice]) + np.cumsum(arm[:, 3:6], axis=0)
         targets[:, rot_slice] = _rot6d_rows(rpy)
-        targets[:, grip_index] = arm[:, 6]
+        # The service's gripper is normalized [0, 1]; ours is meters.
+        targets[:, grip_index] = np.clip(arm[:, 6], 0.0, 1.0) * UMI_GRIPPER_MAX_M
     return targets.astype(np.float32)
 
 
@@ -176,7 +182,7 @@ def eef_state_to_umi_rpy_state(eef_state: np.ndarray) -> np.ndarray:
     def arm(state: np.ndarray) -> np.ndarray:
         xyz = state[0:3]
         rpy = rot6d_to_rpy(state[3:9])
-        grip = float(state[9])
+        grip = float(state[9]) / UMI_GRIPPER_MAX_M
         return np.concatenate([xyz, rpy, [grip]])
 
     left = arm(eef_state[0:10])
