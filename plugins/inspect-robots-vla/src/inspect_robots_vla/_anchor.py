@@ -131,7 +131,7 @@ def anchor_chunk(eef_state: np.ndarray, chunk: VlaChunk) -> np.ndarray:
         anchor_rot = _rot6d_to_matrix(state[rot_slice])
         anchor_xyz = state[xyz_slice]
         step_mats = Rotation.from_euler("xyz", arm[:, 3:6]).as_matrix()
-        for step, (delta_mat, delta_xyz) in enumerate(zip(step_mats, arm[:, 0:3])):
+        for step, (delta_mat, delta_xyz) in enumerate(zip(step_mats, arm[:, 0:3], strict=True)):
             rot = anchor_rot @ delta_mat
             targets[step, xyz_slice] = anchor_xyz + anchor_rot @ delta_xyz
             targets[step, rot_slice] = np.concatenate([rot[:, 0], rot[:, 1]])

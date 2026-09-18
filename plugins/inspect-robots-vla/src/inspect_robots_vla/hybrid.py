@@ -16,6 +16,7 @@ import contextlib
 import copy
 import enum
 import json
+import math
 import os
 import time
 from collections.abc import Sequence
@@ -154,11 +155,60 @@ _TOOLS: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "move_to",
+            "description": (
+                "Analytic free-space motion: move to absolute Cartesian "
+                "end-effector targets (a straight line at a fixed safe "
+                "speed). Unnamed dimensions hold their current value. Use "
+                "this for transport, staging, retreat, and re-approach "
+                "before or between VLA skills; reserve delegate_skill for "
+                "contact-rich phases."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "targets": {
+                        "type": "object",
+                        "description": (
+                            "Map of dimension name to absolute value. Valid "
+                            "names come from the embodiment docs."
+                        ),
+                    },
+                    "note": {"type": "string"},
+                },
+                "required": ["targets", "note"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_gripper",
+            "description": (
+                "Set one gripper's absolute opening width in meters "
+                "(0 closed to 0.09 open) while holding position."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "arm": {"type": "string", "description": "left or right"},
+                    "width_m": {"type": "number"},
+                    "note": {"type": "string"},
+                },
+                "required": ["arm", "width_m", "note"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "delegate_skill",
             "description": (
-                "Hand one short skill segment to the VLA skill policy for open-loop "
-                "execution. You regain control at the next checkpoint, on a tracking "
-                "interrupt, or when the time bound elapses."
+                "Hand one contact-rich skill segment (grasping, constrained placement, "
+                "fixture actuation) to the VLA skill policy for open-loop "
+                "execution. Stage with move_to first when the approach pose "
+                "matters; you regain control at the next checkpoint, on a "
+                "tracking interrupt, or when the time bound elapses."
             ),
             "parameters": {
                 "type": "object",
@@ -427,6 +477,7 @@ class HybridPolicy(PolicyBase):
         )
         self._embodiment_name = "(unbound)"
         self._embodiment_docs: str | None = None
+        self._action_semantics: Any = None
         self._request_id = time.time_ns()
         self._rearm_trial_state()
 
@@ -452,6 +503,7 @@ class HybridPolicy(PolicyBase):
                 )
         self._embodiment_name = embodiment_info.name
         self._embodiment_docs = embodiment_info.docs
+        self._action_semantics = embodiment_info.action_space.semantics
 
     def reset(self, scene: Scene) -> None:
         """Start a fresh trial: goal, conversation, budget, and segment state.
@@ -625,6 +677,21 @@ class HybridPolicy(PolicyBase):
                     )
                 continue
             call, extras = calls[0], calls[1:]
+            if call.name in ("move_to", "set_gripper"):
+                moved, motion_error = self._analytic_move(call, observation)
+                if moved is None or motion_error is not None:
+                    self._reply((call,), motion_error or "no motion produced")
+                    self._reply(extras, "ignored: one tool call per turn")
+                    invalid_turns += 1
+                    if invalid_turns >= _MAX_TURNS_WITHOUT_CALL:
+                        raise PolicyError(
+                            "hybrid planner tool calls kept failing; last error: "
+                            f"{motion_error or 'no motion produced'}"
+                        )
+                    continue
+                self._reply(extras, "ignored: one tool call per turn")
+                self._last_tool_note = str(call.arguments)
+                return moved
             if call.name == "delegate_skill":
                 subgoal, granted = self._parse_delegation(call)
                 if subgoal is None:
@@ -644,7 +711,10 @@ class HybridPolicy(PolicyBase):
                 chunk = self._stop(call, observation)
                 self._reply(extras, "ignored: one tool call per turn")
                 return chunk
-            error = f"unknown tool {call.name!r}; available: delegate_skill, done, give_up"
+            error = (
+                f"unknown tool {call.name!r}; available: "
+                "move_to, set_gripper, delegate_skill, done, give_up"
+            )
             self._reply((call,), error)
             self._reply(extras, "ignored: one tool call per turn")
             invalid_turns += 1
@@ -680,6 +750,81 @@ class HybridPolicy(PolicyBase):
             self._delegation_error = f"max_seconds must be a finite number > 0, got {max_seconds!r}"
             return None, 0.0
         return subgoal, min(float(max_seconds), self._max_skill_seconds)
+
+    def _analytic_move(
+        self, call: ToolCall, observation: Observation
+    ) -> tuple[ActionChunk | None, str | None]:
+        """Build one analytic interpolated chunk from a move_to/set_gripper call.
+
+        Free-space motions run through the same interpolation the agent
+        policy uses: partial absolute targets against the current EE state,
+        split into per-dim step-limited increments. Returns (chunk, None) on
+        success or (None, error) for a structured planner retry.
+        """
+        import json as _json
+
+        try:
+            arguments = _json.loads(call.arguments)
+        except ValueError:
+            return None, "move_to/set_gripper arguments are not valid JSON"
+        if not isinstance(arguments, dict):
+            return None, "move_to/set_gripper arguments must be a JSON object"
+        note = arguments.get("note")
+        if not isinstance(note, str) or not note.strip():
+            return None, "note is required: describe the motion and why"
+        semantics = self._action_semantics
+        labels = list(getattr(semantics, "dim_labels", None) or ())
+        if not labels:
+            return None, "the embodiment declares no dimension labels for move_to"
+        index = {label: position for position, label in enumerate(labels)}
+        try:
+            eef_state = self._require_eef_state(observation)
+        except PolicyError as exc:
+            return None, str(exc)
+        target = eef_state.astype(np.float64).copy()
+        if call.name == "set_gripper":
+            arm = str(arguments.get("arm", "")).strip().lower()
+            width = arguments.get("width_m")
+            dim = f"{arm}_gripper" if arm in ("left", "right") else None
+            if dim is None or dim not in index:
+                return None, "set_gripper arm must be 'left' or 'right'"
+            if not isinstance(width, (int, float)) or isinstance(width, bool):
+                return None, "set_gripper width_m must be a number (0 to 0.09)"
+            arguments = {"targets": {dim: float(width)}}
+        values = arguments.get("targets")
+        if not isinstance(values, dict) or not values:
+            return None, "move_to targets must be a non-empty object of name: value"
+        for label, raw in values.items():
+            if label not in index:
+                return None, f"unknown dimension {label!r}; valid names: {', '.join(labels)}"
+            if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+                return None, f"value for {label!r} must be a finite number"
+            target[index[label]] = float(raw)
+        if not np.isfinite(target).all():
+            return None, "targets hold non-finite values"
+        step_limits = getattr(semantics, "max_step", None)
+        ratios = []
+        for label in values:
+            position = index[label]
+            distance = abs(target[position] - eef_state[position])
+            limit = float(step_limits[position]) if step_limits else 0.01
+            if limit > 0 and distance > 0:
+                ratios.append(distance / limit)
+        steps = max(1, math.ceil(max(ratios, default=0.0)))
+        fractions = np.linspace(1.0 / steps, 1.0, steps)
+        rows = [
+            (eef_state + (target - eef_state) * fraction).astype(np.float32)
+            for fraction in fractions
+        ]
+        rows[-1] = target.astype(np.float32)
+        return (
+            ActionChunk(
+                actions=[Action(data=row) for row in rows],
+                control_hz=self._control_hz,
+                meta={"analytic": call.name},
+            ),
+            None,
+        )
 
     def _begin_segment(self, call: ToolCall, subgoal: str, granted_s: float) -> None:
         """Arm a fresh skill segment and tell the planner what was granted."""

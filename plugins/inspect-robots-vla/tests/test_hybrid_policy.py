@@ -244,6 +244,8 @@ def test_planning_executing_deciding_done_full_path() -> None:
     assert "delegate_skill" in system
     assert _PROMPT in _text_of([first.messages[1]])
     assert {tool["function"]["name"] for tool in first.tools} == {
+        "move_to",
+        "set_gripper",
         "delegate_skill",
         "done",
         "give_up",
@@ -590,3 +592,121 @@ def test_transcript_hooks_expose_the_planner_conversation() -> None:
     assert fresh is not None
     assert [m["role"] for m in fresh] == ["system", "user"]
     assert "Goal: " + _PROMPT in json.dumps(fresh)
+
+
+def test_analytic_move_to_builds_partial_target_chunk() -> None:
+    llm = _FakeLlm([_move_to({"left_x": 0.40}), _done()])
+    vla = _FakeVla([])
+    policy = _policy(llm, vla)
+    _bind_semantics(policy)
+    _reset(policy)
+    first = policy.act(_observation())
+    rows = [np.asarray(action.data) for action in first.actions]
+    assert rows  # interpolated analytic chunk, no VLA call
+    assert vla.calls == []
+    assert first.meta.get("analytic") == "move_to"
+    assert rows[-1][0] == pytest.approx(0.40, abs=1e-6)
+    assert rows[-1][1:10] == pytest.approx(np.asarray(_eef_state()[1:10]), abs=1e-6)
+
+
+def test_analytic_set_gripper_only_touches_one_dim() -> None:
+    llm = _FakeLlm([_set_gripper("left", 0.02), _done()])
+    vla = _FakeVla([])
+    policy = _policy(llm, vla)
+    _bind_semantics(policy)
+    _reset(policy)
+    first = policy.act(_observation())
+    rows = [np.asarray(action.data) for action in first.actions]
+    assert rows[-1][9] == pytest.approx(0.02, abs=1e-6)
+    assert rows[-1][19] == pytest.approx(_eef_state()[19], abs=1e-6)
+    assert rows[-1][0:3] == pytest.approx(np.asarray(_eef_state()[0:3]), abs=1e-6)
+
+
+def test_analytic_move_rejects_unknown_dimension() -> None:
+    llm = _FakeLlm([_move_to({"warp_drive": 1.0}), _done()])
+    vla = _FakeVla([])
+    policy = _policy(llm, vla)
+    _bind_semantics(policy)
+    _reset(policy)
+    # The bad call is answered with a structured error; the planner's next
+    # call (done) still ends the trial cleanly.
+    chunk = policy.act(_observation())
+    assert any("unknown dimension" in _text_of([message]) for message in _last_tool(llm))
+    assert chunk.actions[0].meta.get("stop_reason") == "done"
+
+
+_DIM_LABELS = tuple(
+    f"{arm}_{part}"
+    for arm in ("left", "right")
+    for part in (
+        "x",
+        "y",
+        "z",
+        "r1",
+        "r2",
+        "r3",
+        "r4",
+        "r5",
+        "r6",
+        "gripper",
+    )
+)
+
+
+def _bind_semantics(policy: HybridPolicy) -> None:
+    """Bind an embodiment whose action space names all 20 dims."""
+    from inspect_robots import Box, CameraSpec, EmbodimentInfo, ObservationSpace
+    from inspect_robots.spaces import ActionSemantics
+
+    policy.bind(
+        EmbodimentInfo(
+            name="nero",
+            action_space=Box(
+                shape=(20,),
+                semantics=ActionSemantics(
+                    control_mode="eef_abs_pose",
+                    rotation_repr="rot6d",
+                    gripper="continuous",
+                    dim_labels=_DIM_LABELS,
+                    max_step=(0.01,) * 20,
+                ),
+            ),
+            observation_space=ObservationSpace(
+                cameras=tuple(
+                    CameraSpec(n, 4, 8) for n in ("left_rgbd", "right_rgbd", "chest_rgbd")
+                ),
+                state_keys=frozenset({"eef_state"}),
+            ),
+        )
+    )
+
+
+def _move_to(targets: dict[str, float]) -> AssistantMessage:
+    return AssistantMessage(
+        content=None,
+        tool_calls=(
+            ToolCall(
+                id="c1",
+                name="move_to",
+                arguments=json.dumps({"targets": targets, "note": "stage above the cup"}),
+            ),
+        ),
+    )
+
+
+def _set_gripper(arm: str, width_m: float) -> AssistantMessage:
+    return AssistantMessage(
+        content=None,
+        tool_calls=(
+            ToolCall(
+                id="c1",
+                name="set_gripper",
+                arguments=json.dumps({"arm": arm, "width_m": width_m, "note": "open"}),
+            ),
+        ),
+    )
+
+
+def _last_tool(llm: _FakeLlm) -> list[dict[str, Any]]:
+    """The messages the planner last sent (the latest conversation tail)."""
+    return llm.calls[-1].messages
