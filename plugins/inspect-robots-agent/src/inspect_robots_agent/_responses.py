@@ -108,6 +108,18 @@ class ResponsesClient:
                             self._raw_items_by_call_id[str(item["call_id"])] = output
                     return message
                 last_error = f"HTTP {response.status_code}: {response.text[:500]}"
+                if response.status_code == 400 and "summary" in response.text:
+                    # Proxied Responses endpoints flap on the function_call_output
+                    # summary field: one request demands it ("Missing required
+                    # parameter: 'input[N].summary'"), the next rejects it
+                    # ("Unknown parameter: 'input[N].summary'"). Flip the field
+                    # once and retry immediately instead of failing the trial.
+                    if "Unknown parameter" in response.text and _has_summaries(body):
+                        body = _strip_summaries(body)
+                        continue
+                    if "Missing required parameter" in response.text and not _has_summaries(body):
+                        body = _add_summaries(body)
+                        continue
                 if response.status_code not in (429,) and response.status_code < 500:
                     raise RuntimeError(f"LLM request rejected — {last_error}")
             if attempt + 1 < self._max_retries:
@@ -117,6 +129,48 @@ class ResponsesClient:
     def close(self) -> None:
         """Release the underlying HTTP connection pool."""
         self._http.close()
+
+
+def _has_summaries(body: dict[str, Any]) -> bool:
+    """True when any input function_call_output item carries a summary."""
+    return any(
+        item.get("type") == "function_call_output" and "summary" in item
+        for item in body.get("input", [])
+        if isinstance(item, dict)
+    )
+
+
+def _strip_summaries(body: dict[str, Any]) -> dict[str, Any]:
+    """Rebuild input with summary fields dropped from function_call_output items."""
+    input_items = body.get("input", [])
+    body = dict(body)
+    body["input"] = [
+        {key: value for key, value in item.items() if key != "summary"}
+        if isinstance(item, dict) and item.get("type") == "function_call_output"
+        else item
+        for item in input_items
+    ]
+    return body
+
+
+def _add_summaries(body: dict[str, Any]) -> dict[str, Any]:
+    """Rebuild input adding summary=output where a function_call_output lacks one."""
+    input_items = body.get("input", [])
+    body = dict(body)
+    rebuilt = []
+    for item in input_items:
+        if (
+            isinstance(item, dict)
+            and item.get("type") == "function_call_output"
+            and "summary" not in item
+        ):
+            patched = dict(item)
+            patched["summary"] = str(item.get("output", ""))
+            rebuilt.append(patched)
+        else:
+            rebuilt.append(item)
+    body["input"] = rebuilt
+    return body
 
 
 def _history_call_ids(messages: list[dict[str, Any]]) -> set[str]:
