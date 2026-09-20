@@ -103,7 +103,7 @@ class LlmWire(Protocol):
         ...
 
 
-class _EffortLlm:
+class _EffortLlm(LlmWire):
     """Chat adapter that pins ``reasoning_effort`` on every completion.
 
     Gateways that reject tool calls combined with a reasoning-effort field
