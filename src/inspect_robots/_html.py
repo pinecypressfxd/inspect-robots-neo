@@ -1851,6 +1851,27 @@ def render_html(
         ""
         if refresh_seconds is None
         else f'<meta http-equiv="refresh" content="{_escape(refresh_seconds)}">\n'
+        "<script>\n"
+        "// The live meta-refresh reloads the whole document every cycle; save the"
+        "// scroll position and the Follow-toggle state so the reload lands where"
+        "// the reader was instead of jumping back to the top.\n"
+        "window.addEventListener('beforeunload', function () {\n"
+        "  sessionStorage.setItem('ir-scroll-' + location.pathname, String(window.scrollY));\n"
+        "  var follow = document.querySelector('[data-follow]');\n"
+        "  sessionStorage.setItem(\n"
+        "    'ir-follow-' + location.pathname,\n"
+        "    follow && follow.classList.contains('active') ? '1' : '0'\n"
+        "  );\n"
+        "});\n"
+        "window.addEventListener('DOMContentLoaded', function () {\n"
+        "  var saved = sessionStorage.getItem('ir-scroll-' + location.pathname);\n"
+        "  if (saved !== null) { window.scrollTo(0, Number(saved) || 0); }\n"
+        "  if (sessionStorage.getItem('ir-follow-' + location.pathname) === '1') {\n"
+        "    var follow = document.querySelector('[data-follow]');\n"
+        "    if (follow) { follow.classList.add('active'); }\n"
+        "  }\n"
+        "});\n"
+        "</script>\n"
     )
     last_update: str | None = None
     for scene in reversed(log.samples):
