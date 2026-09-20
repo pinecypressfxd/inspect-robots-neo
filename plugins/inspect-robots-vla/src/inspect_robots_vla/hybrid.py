@@ -65,6 +65,7 @@ from ._config import (
     SUBMIT_IMAGES,
     TRACKING_ABORT_POS_M,
     TRACKING_ABORT_ROT_DEG,
+    TRAINED_SKILL_PROMPT,
     VLA_BASE_URL,
     VLA_POLL_INTERVAL_S,
     VLA_POLL_TIMEOUT_S,
@@ -956,6 +957,12 @@ class HybridPolicy(PolicyBase):
         """The hybrid role text plus whatever embodiment notes bind() recorded."""
         formatted = _SYSTEM_TEMPLATE.format(
             name=self._embodiment_name, budget=self._budget_llm_calls
+        )
+        formatted += (
+            "\n\nTrained skill policy: the skill policy was finetuned on exactly one "
+            f"prompt, {TRAINED_SKILL_PROMPT!r}. Delegate that one skill (verbatim "
+            "subgoal) for its contact-rich phase; every other part of the goal, "
+            "including anything after it, complete with move_to and set_gripper."
         )
         docs = self._embodiment_docs
         if docs is not None and docs.strip():

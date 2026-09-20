@@ -8,6 +8,11 @@ through the policy factories (plan 0084). Wire facts (field names, CHW layout,
 
 from __future__ import annotations
 
+#: The VLA checkpoint's finetuning prompt (training task field). The skill
+#: policy generalizes only near this phrasing; the planner delegates exactly
+#: this skill once and completes the rest of the goal analytically.
+TRAINED_SKILL_PROMPT = "put the cup on the pad with left arm"
+
 VLA_BASE_URL = "http://127.0.0.1:10055"
 VLA_SUBMIT_TIMEOUT_S = 10.0
 VLA_POLL_INTERVAL_S = 0.05
