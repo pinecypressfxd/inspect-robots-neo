@@ -234,7 +234,12 @@ def test_capture_history_keeps_function_outputs_in_call_order_before_images() ->
             "name": "take_pic",
             "arguments": '{"note":"inspect"}',
         },
-        {"type": "function_call_output", "call_id": "move", "output": "executing move", "summary": "executing move"},
+        {
+            "type": "function_call_output",
+            "call_id": "move",
+            "output": "executing move",
+            "summary": "executing move",
+        },
         {
             "type": "function_call_output",
             "call_id": "pic",
