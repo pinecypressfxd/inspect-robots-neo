@@ -152,11 +152,13 @@ def test_translates_history_tools_and_request_options() -> None:
                 "type": "function_call_output",
                 "call_id": "call_extra",
                 "output": "ignored: one tool call per turn",
+                "summary": "ignored: one tool call per turn",
             },
             {
                 "type": "function_call_output",
                 "call_id": "call_move",
                 "output": "moved",
+                "summary": "moved",
             },
             {"role": "assistant", "content": "plain assistant history"},
         ],
@@ -232,11 +234,12 @@ def test_capture_history_keeps_function_outputs_in_call_order_before_images() ->
             "name": "take_pic",
             "arguments": '{"note":"inspect"}',
         },
-        {"type": "function_call_output", "call_id": "move", "output": "executing move"},
+        {"type": "function_call_output", "call_id": "move", "output": "executing move", "summary": "executing move"},
         {
             "type": "function_call_output",
             "call_id": "pic",
             "output": "captured 1 frame(s): 'top'",
+            "summary": "captured 1 frame(s): 'top'",
         },
         {
             "role": "user",
@@ -318,6 +321,7 @@ def test_cache_miss_synthesizes_tool_call_only_turn_without_null_message() -> No
             "type": "function_call_output",
             "call_id": "external",
             "output": "done: ok",
+            "summary": "done: ok",
         },
     ]
     assert not any("content" in item and item["content"] is None for item in bodies[0]["input"])
@@ -356,6 +360,7 @@ def test_replays_all_raw_items_once_before_function_output() -> None:
         "type": "function_call_output",
         "call_id": "call_move",
         "output": "moved",
+        "summary": "moved",
     }
     assert replay.count(reasoning) == 1
     assert replay.count(message) == 1

@@ -139,11 +139,17 @@ def _translate_messages(
     for message in messages:
         role = message["role"]
         if role == "tool":
+            output = message["content"]
             items.append(
                 {
                     "type": "function_call_output",
                     "call_id": message["tool_call_id"],
-                    "output": message["content"],
+                    "output": output,
+                    # Some proxied Responses endpoints validate a summary on
+                    # function_call_output (400 "Missing required parameter:
+                    # 'input[N].summary'"); official OpenAI tolerates the extra
+                    # field, so it rides along unconditionally.
+                    "summary": str(output),
                 }
             )
             continue
