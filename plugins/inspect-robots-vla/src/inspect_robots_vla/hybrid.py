@@ -117,12 +117,17 @@ class _EffortLlm(LlmWire):
         self._effort = effort
 
     def complete(
-        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        *,
+        reasoning_effort: str | float | None = None,
     ) -> AssistantMessage:
         """One completion with the configured effort (None leaves it unset)."""
-        if self._effort is None:
+        effort = self._effort if reasoning_effort is None else reasoning_effort
+        if effort is None:
             return self._inner.complete(messages, tools)
-        return self._inner.complete(messages, tools, reasoning_effort=self._effort)
+        return self._inner.complete(messages, tools, reasoning_effort=effort)
 
 
 @dataclass(frozen=True)
