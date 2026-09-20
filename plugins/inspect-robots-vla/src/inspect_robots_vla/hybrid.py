@@ -593,7 +593,9 @@ class HybridPolicy(PolicyBase):
             self._owned_vla.close()
             self._owned_vla = None
         if self._owned_llm is not None:
-            self._owned_llm.close()
+            close = getattr(self._owned_llm, "close", None)
+            if callable(close):
+                close()
             self._owned_llm = None
 
     def __del__(self) -> None:
