@@ -492,6 +492,7 @@ class RunManager:
         instruction: str,
         prepare: Callable[[], None] | None = None,
         rollback: Callable[[], None] | None = None,
+        suffix: list[str] | None = None,
     ) -> str | None:
         """Spawn one run for ``instruction``; return an error message or None.
 
@@ -531,8 +532,9 @@ class RunManager:
             except OSError as exc:
                 log_file.close()
                 return self._fail_start(rollback, f"could not allocate the run terminal: {exc}")
-            suffix = [arg.replace("__INSTRUCTION__", instruction) for arg in self._suffix]
-            command = [*self._prefix, instruction, *suffix]
+            effective = suffix if suffix is not None else self._suffix
+            resolved = [arg.replace("__INSTRUCTION__", instruction) for arg in effective]
+            command = [*self._prefix, instruction, *resolved]
             try:
                 # ValueError joins OSError: an embedded NUL byte in the
                 # instruction (or any argument) fails the exec, not the console.
@@ -1242,12 +1244,19 @@ class MissionRequestHandler(BaseHTTPRequestHandler):
             return
         instruction = body.get("instruction")
         if not isinstance(instruction, str) or not instruction.strip():
-            self._send_json(400, {"error": "instruction must be a non-empty string"})
+            self._send_json(400, {"error": "instruction must be non-empty"})
             return
+        policy = body.get("policy", self.server.default_policy)
+        if policy not in ("agent", "hybrid", "vla"):
+            self._send_json(400, {"error": f"unknown policy {policy!r}"})
+            return
+        self.server.default_policy = policy
+        suffix = self.server.build_suffix(policy)
         error = self.server.runs.start(
             instruction.strip(),
             prepare=self.server.pool.stop,
             rollback=self.server.pool.restart,
+            suffix=suffix,
         )
         if error is not None:
             self._send_json(400, {"error": error})
@@ -1509,6 +1518,8 @@ class MissionServer(ThreadingHTTPServer):
         armtools: ArmToolRunner,
         exporter: LerobotExporter,
         page_html: bytes,
+        default_policy: str,
+        build_suffix: Callable[[str], list[str]],
     ) -> None:
         """Bind ``address``; requests are served by MissionRequestHandler."""
         super().__init__(address, MissionRequestHandler)
@@ -1516,6 +1527,8 @@ class MissionServer(ThreadingHTTPServer):
         self.runs = runs
         self.armtools = armtools
         self.exports = exporter
+        self.default_policy = default_policy
+        self.build_suffix = build_suffix
         self.feed = RunFeed()
         self.page_html = page_html
         host = address[0].lower()
@@ -1597,6 +1610,11 @@ _PAGE_HEAD = """<!doctype html>
 
 _PAGE_TAIL = """</div>
 <div class="controls">
+  <select id="policy">
+    <option value="agent">agent (LLM only)</option>
+    <option value="hybrid">hybrid (LLM + VLA)</option>
+    <option value="vla">vla (VLA only)</option>
+  </select>
   <input id="instruction" placeholder="instruction for the run" autocomplete="off">
   <button id="start">Start</button>
   <button id="stop">Stop</button>
@@ -1628,6 +1646,7 @@ _PAGE_TAIL = """</div>
 const startBtn = document.getElementById("start");
 const stopBtn = document.getElementById("stop");
 const cancelBtn = document.getElementById("cancel");
+const policySel = document.getElementById("policy");
 const input = document.getElementById("instruction");
 const statusBox = document.getElementById("status");
 const verdicts = document.getElementById("verdicts");
@@ -1843,7 +1862,7 @@ startBtn.addEventListener("click", () => {
     return;
   }
   disarm();
-  post("/api/start", { instruction: input.value });
+  post("/api/start", { instruction: input.value, policy: policySel.value });
 });
 cancelBtn.addEventListener("click", disarm);
 input.addEventListener("input", disarm);
@@ -1909,6 +1928,13 @@ def render_page(camera_names: Sequence[str], history_url: str) -> bytes:
     return (head + tiles + _PAGE_TAIL).encode("utf-8")
 
 
+def _policy_namespace(base: argparse.Namespace, policy: str) -> argparse.Namespace:
+    """Copy of ``base`` with ``policy`` swapped, for on-demand suffix builds."""
+    patched = argparse.Namespace(**vars(base))
+    patched.policy = policy
+    return patched
+
+
 def build_command(namespace: argparse.Namespace) -> tuple[list[str], list[str]]:
     """Split the spawned eval argv into the halves around the instruction."""
     # Explicit `run --instruction` rather than the positional sugar: the sugar
@@ -1922,9 +1948,23 @@ def build_command(namespace: argparse.Namespace) -> tuple[list[str], list[str]]:
         "-E",
         "operator_reset_confirm=False",
     ]
-    if namespace.policy == "umi-replay":
+    if namespace.policy in ("vla", "umi-replay"):
         # Pure VLA baseline: the same instruction is the trained prompt.
         suffix = [*common, "--policy", "umi-replay", "-P", "prompt=__INSTRUCTION__"]
+    elif namespace.policy == "hybrid":
+        suffix = [
+            *common,
+            "--policy",
+            "hybrid",
+            "-P",
+            f"model={namespace.model}",
+            "-P",
+            "wire=responses",
+            "-P",
+            f"base_url={namespace.base_url}",
+            "-P",
+            f"api_key_env={namespace.api_key_env}",
+        ]
     else:
         suffix = [
             *common,
@@ -1983,7 +2023,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--policy",
-        choices=["agent", "umi-replay"],
+        choices=["agent", "hybrid", "vla"],
         default="agent",
         help="policy the spawned runs use (agent needs the LLM flags below)",
     )
@@ -2046,7 +2086,16 @@ def main(argv: list[str] | None = None) -> int:
     runs = RunManager(prefix, suffix, Path(args.log_dir), exporter)
     armtools = ArmToolRunner(Path(__file__).with_name("arm_tools.py"), Path(args.log_dir))
     page_html = render_page(pool.names, args.history_url)
-    server = MissionServer((args.host, args.port), pool, runs, armtools, exporter, page_html)
+    server = MissionServer(
+        (args.host, args.port),
+        pool,
+        runs,
+        armtools,
+        exporter,
+        page_html,
+        args.policy,
+        lambda policy: build_command(_policy_namespace(args, policy))[1],
+    )
     print(f"[console] mission console on http://{args.host}:{args.port}/")
     print(f"[console] cameras: {', '.join(pool.describe())}")
     print(f"[console] start command: {' '.join([*prefix, '<instruction>', *suffix])}")
