@@ -739,6 +739,7 @@ class HybridPolicy(PolicyBase):
                             f"{motion_error or 'no motion produced'}"
                         )
                     continue
+                self._reply((call,), "analytic motion accepted")
                 self._reply(extras, "ignored: one tool call per turn")
                 self._last_tool_note = str(call.arguments)
                 return moved
