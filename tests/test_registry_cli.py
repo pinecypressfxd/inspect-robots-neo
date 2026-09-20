@@ -2623,6 +2623,58 @@ def test_view_serve_initial_live_refresh_and_static_live_page_rules(
     assert 'http-equiv="refresh"' not in static_page
 
 
+def test_view_zombie_live_snapshot_demotes_to_a_dead_page(
+    tmp_path: Path,
+) -> None:
+    """A killed run's stale ``.live.json`` stops live treatment and self-heals.
+
+    While fresh the page renders live (refresh meta, RUNNING banner); once the
+    snapshot ages past the window it re-renders once as a dead snapshot and no
+    longer counts toward the serve loop's live set; a resumed write restores
+    live treatment on the next pass.
+    """
+    import time as _time
+
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    live = _directory_view_log(created="2026-08-06T12:00:00Z", status="started")
+    live_path = _write_log(live, logs, "run.live.json")
+    args = cli.build_parser().parse_args(["view", str(logs), "--serve"])
+
+    def render() -> None:
+        cli._render_view_directory(args, logs, force=False, quiet=True, refresh_seconds=2)
+
+    render()  # fresh: live treatment
+    page = logs / "html" / "run.live.html"
+    assert 'http-equiv="refresh"' in page.read_text(encoding="utf-8")
+    assert live_path in cli._fresh_live_paths(logs)
+
+    # The run dies: age the snapshot past the freshness window.
+    old = _time.time() - cli._LIVE_STALE_S - 10.0
+    os.utime(live_path, (old, old))
+    assert cli._fresh_live_paths(logs) == set()
+    render()
+    dead = page.read_text(encoding="utf-8")
+    assert 'http-equiv="refresh"' not in dead
+    assert "RUNNING —" not in dead
+
+    # Demoted once, then stable: another pass must not rewrite it.
+    before = page.stat().st_mtime_ns
+    render()
+    assert page.stat().st_mtime_ns == before
+
+    # The run resumes: a fresh write restores live treatment next pass.
+    live_path.touch()
+    render()
+    assert 'http-equiv="refresh"' in page.read_text(encoding="utf-8")
+
+    assert cli._page_has_refresh_meta(tmp_path / "missing.html") is False
+    # A snapshot vanishing between glob and stat (dangling symlink) is
+    # skipped, never fatal to the pass.
+    (logs / "gone.live.json").symlink_to(logs / "never-written.json")
+    assert {p.name for p in cli._fresh_live_paths(logs)} == {"run.live.json"}
+
+
 @pytest.mark.parametrize("missing", [False, True])
 def test_view_serve_empty_or_missing_directory_starts_with_no_logs_index(
     missing: bool,

@@ -164,6 +164,14 @@ _ENV_BY_KIND = {"policy": _ENV_POLICY, "embodiment": _ENV_EMBODIMENT}
 DEFAULT_RERUN_CONNECT_URL = "rerun+http://127.0.0.1:9876/proxy"
 _SERVE_RERENDER_SECONDS = 60
 _SERVE_LIVE_RERENDER_SECONDS = 2
+# A .live.json untouched for this long belongs to a killed run (the sink
+# removes its snapshot on clean exit). Such zombies must stop counting as
+# live: otherwise they hold every library page in 2-second refresh mode and
+# re-render their own page on every serve pass, forever. Longer than any
+# legitimate quiet stretch (an operator verdict prompt or one slow inference
+# round trip); if the run resumes, the next write re-marks it fresh and the
+# following pass restores live treatment.
+_LIVE_STALE_S = 120.0
 # Two-level directory stamp (plan 0060): a suppressed-tier page (serve pass or
 # --no-video) is stamped this far below the source log's mtime so a later
 # full-tier pass can recognize and upgrade it. The delta spans many filesystem
@@ -2309,6 +2317,32 @@ def _write_live_redirect_stub(path: Path) -> int:
     return _write_html_atomic(document, path)
 
 
+def _fresh_live_paths(log_dir: Path) -> set[Path]:
+    """Live snapshots written recently enough that their run may still be alive."""
+    now = time.time()
+    fresh: set[Path] = set()
+    for path in log_dir.glob("*.live.json"):
+        try:
+            if now - path.stat().st_mtime < _LIVE_STALE_S:
+                fresh.add(path)
+        except OSError:
+            continue
+    return fresh
+
+
+def _page_has_refresh_meta(page_path: Path) -> bool:
+    """True when a rendered page's head still carries the live refresh meta.
+
+    The meta sits within the first bytes of the document (right after the
+    charset), so a short read answers without loading the page.
+    """
+    try:
+        with page_path.open("rb") as handle:
+            return b'http-equiv="refresh"' in handle.read(512)
+    except OSError:
+        return False
+
+
 def _render_view_directory(
     args: argparse.Namespace,
     log_dir: Path,
@@ -2346,6 +2380,7 @@ def _render_view_directory(
     # log appearing between the two globs must not have its freshly rendered
     # page immediately stubbed as an orphan.
     backed_live_pages = {page_names[path] for path in log_paths if path.name.endswith(".live.json")}
+    fresh_live = _fresh_live_paths(log_dir)
     entries: list[IndexEntry] = []
     pages_written = 0
     bytes_written = 0
@@ -2357,6 +2392,10 @@ def _render_view_directory(
         page_name = page_names[log_path]
         page_path = out_dir / page_name
         is_live_path = log_path.name.endswith(".live.json")
+        # Only a started log with a FRESH snapshot is live: a killed run's
+        # zombie .live.json renders once as a dead snapshot (no refresh meta,
+        # no per-pass re-render) instead of refreshing forever.
+        live_now = is_live_path and log_path in fresh_live
         try:
             source_stat = log_path.stat()
             log = read_eval_log(str(log_path))
@@ -2372,9 +2411,14 @@ def _render_view_directory(
             )
             render_page = (
                 force
-                or log.status == "started"
+                or (log.status == "started" and live_now)
                 or not page_path.exists()
                 or page_path.stat().st_mtime_ns < stamp_ns - _STAMP_TICK_SLACK_NS
+                # A stale started page that still carries the live refresh meta
+                # (rendered while fresh, then the run died) re-renders once to
+                # demote it to a dead snapshot; the head peek is cheap and the
+                # demoted page no longer matches.
+                or (log.status == "started" and not live_now and _page_has_refresh_meta(page_path))
             )
             if render_page:
                 if not quiet:
@@ -2386,19 +2430,17 @@ def _render_view_directory(
                     no_frames=args.no_frames,
                     frames_budget=args.frames_budget,
                     live_frames_budget=(
-                        args.live_frames_budget if args.serve and log.status == "started" else None
+                        args.live_frames_budget if args.serve and live_now else None
                     ),
                     refresh_seconds=(
-                        _SERVE_LIVE_RERENDER_SECONDS
-                        if args.serve and log.status == "started"
-                        else None
+                        _SERVE_LIVE_RERENDER_SECONDS if args.serve and live_now else None
                     ),
                     atomic=log.status == "started",
                     no_video=args.no_video,
                     serve_pass=args.serve,
                 )
-                if log.status != "started":
-                    # Started pages re-render every pass by design (plan 0058);
+                if log.status != "started" or not live_now:
+                    # Live pages re-render every pass by design (plan 0058);
                     # the two-level stamp is a completed-page contract only.
                     os.utime(
                         page_path,
@@ -2534,7 +2576,7 @@ def _serve_view_directory(
         while True:
             _serve_sleep(_SERVE_LIVE_RERENDER_SECONDS)
             accumulated_seconds += _SERVE_LIVE_RERENDER_SECONDS
-            live_set = {path.name for path in log_dir.glob("*.live.json")}
+            live_set = {path.name for path in _fresh_live_paths(log_dir)}
             if not (
                 live_set != previous_live_set
                 or live_set
@@ -2581,7 +2623,7 @@ def _serve_view_directory(
 
 def _cmd_view_directory(args: argparse.Namespace, log_dir: Path) -> int:
     """Render a logs directory and optionally serve it until stopped."""
-    live_set = {path.name for path in log_dir.glob("*.live.json")}
+    live_set = {path.name for path in _fresh_live_paths(log_dir)}
     render_result = _render_view_directory(
         args,
         log_dir,

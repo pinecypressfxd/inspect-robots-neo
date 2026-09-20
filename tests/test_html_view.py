@@ -229,7 +229,7 @@ def test_running_refresh_banner_pending_scores_and_escaping() -> None:
     )
 
     assert '<meta http-equiv="refresh" content="2">' in document
-    assert "RUNNING — refreshes every 2s · last update 12:34:56" in document
+    assert "RUNNING — refreshes every 2s · step 4 · last update 12:34:56" in document
     assert '<span class="badge status-running">running</span>' in document
     assert '<span class="score-chip">trial 1 pending</span>' in document
 
@@ -244,6 +244,27 @@ def test_running_refresh_banner_pending_scores_and_escaping() -> None:
     )
     assert "last update &lt;script&gt;" in hostile
     assert "&amp;lt;script&amp;gt;" not in hostile
+
+
+def test_running_banner_omits_the_step_note_without_an_int_step() -> None:
+    base = _log(status="started").samples[0]
+
+    def document(marker: object) -> str:
+        scene = dataclasses.replace(base, trial_metadata=({}, {"live": marker}))
+        return render_html(
+            dataclasses.replace(_log(status="started"), samples=(scene,)),
+            title="running",
+            refresh_seconds=2,
+        )
+
+    with_step = document({"step": 41, "updated_at": "2026-08-06T12:00:00+00:00"})
+    assert "· step 41 · last update 12:00:00" in with_step
+
+    # No step key, or a non-int one (the sanitizer can shape-shift values):
+    # the banner keeps the update time and drops the step note.
+    assert "· step" not in document({"updated_at": "2026-08-06T12:00:00+00:00"})
+    assert "· step" not in document({"step": "41", "updated_at": "2026-08-06T12:00:00+00:00"})
+    assert "· step" not in document({"step": True, "updated_at": "2026-08-06T12:00:00+00:00"})
 
 
 def test_refresh_and_pending_output_are_opt_in() -> None:

@@ -129,6 +129,9 @@ def test_library_page_refresh_meta_and_empty_state() -> None:
     html = render_library([], refresh_seconds=5)
 
     assert '<meta http-equiv="refresh" content="5">' in html
+    # The refresh restores the reader's scroll position after each reload.
+    assert "ir-scroll-" in html
+    assert "ir-scroll-" not in render_library([])
     assert "no evaluation logs found" in html
 
 
@@ -238,7 +241,12 @@ def test_task_page_refresh_meta_matches_the_library_page() -> None:
     html = render_task_page(tasks[0], refresh_seconds=5)
 
     assert '<meta http-equiv="refresh" content="5">' in html
-    assert '<meta http-equiv="refresh"' not in render_task_page(tasks[0])
+    # Task pages also restore the selected rollout tab, not just the scroll.
+    assert "ir-scroll-" in html
+    assert "ir-tab-" in html
+    static = render_task_page(tasks[0])
+    assert '<meta http-equiv="refresh"' not in static
+    assert "ir-tab-" not in static
 
 
 def test_task_page_tab_click_script_is_wired_once() -> None:

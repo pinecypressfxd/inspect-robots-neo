@@ -270,6 +270,48 @@ def _loose_section(loose: Sequence[IndexEntry]) -> str:
     )
 
 
+def _refresh_restore_script(*, with_tabs: bool = False) -> str:
+    """Save/restore script for auto-refreshing pages: the scroll position and,
+    on task pages, the selected rollout tab.
+
+    Library pages refresh the whole document (see ``render_library``'s note);
+    without this every reload jumps back to the top and the newest rollout
+    tab. Keys are per-pathname in sessionStorage, mirroring the run pages'
+    script in ``_html.py``.
+    """
+    save_tab = (
+        "\n  var active = document.querySelector('.tab.active');\n"
+        "  if (active && active.dataset.src) sessionStorage.setItem(\n"
+        "    'ir-tab-' + location.pathname, active.dataset.src\n"
+        "  );"
+        if with_tabs
+        else ""
+    )
+    restore_tab = (
+        "\n  var src = sessionStorage.getItem('ir-tab-' + location.pathname);\n"
+        "  var tab = src && document.querySelector('.tab[data-src=\"' + src + '\"]');\n"
+        "  if (tab) { tab.click(); }"
+        if with_tabs
+        else ""
+    )
+    return (
+        "<script>\n"
+        "// The meta-refresh reloads the whole document every cycle; save the\n"
+        "// scroll position (and the selected rollout tab) so the reload lands\n"
+        "// where the reader was instead of the top and the newest tab.\n"
+        "window.addEventListener('beforeunload', function () {\n"
+        "  sessionStorage.setItem('ir-scroll-' + location.pathname, String(window.scrollY));"
+        + save_tab
+        + "\n"
+        "});\n"
+        "window.addEventListener('DOMContentLoaded', function () {\n"
+        "  var saved = sessionStorage.getItem('ir-scroll-' + location.pathname);\n"
+        "  if (saved !== null) { window.scrollTo(0, Number(saved) || 0); }" + restore_tab + "\n"
+        "});\n"
+        "</script>\n"
+    )
+
+
 def render_library(
     tasks: Sequence[LibraryTask],
     *,
@@ -297,7 +339,9 @@ def render_library(
     if refresh_seconds is not None:
         # A full refresh resets filter focus/caret at the selected interval;
         # accepted over the extra complexity of a fetch-and-swap index update.
-        refresh = f'<meta http-equiv="refresh" content="{refresh_seconds}">\n'
+        refresh = (
+            f'<meta http-equiv="refresh" content="{refresh_seconds}">\n' + _refresh_restore_script()
+        )
     return f"""<!doctype html>
 <html lang="en">
 <head>
@@ -453,8 +497,12 @@ def render_task_page(task: LibraryTask, *, refresh_seconds: int | None = None) -
     refresh = ""
     if refresh_seconds is not None:
         # A full refresh resets the selected tab to the newest rollout at the
-        # selected interval; accepted over patching the iframe in place.
-        refresh = f'<meta http-equiv="refresh" content="{refresh_seconds}">\n'
+        # selected interval; the restore script re-selects the reader's tab
+        # and scroll after each reload.
+        refresh = (
+            f'<meta http-equiv="refresh" content="{refresh_seconds}">\n'
+            + _refresh_restore_script(with_tabs=True)
+        )
     return f"""<!doctype html>
 <html lang="en">
 <head>

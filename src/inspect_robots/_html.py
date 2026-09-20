@@ -1874,6 +1874,7 @@ def render_html(
         "</script>\n"
     )
     last_update: str | None = None
+    live_step: int | None = None
     for scene in reversed(log.samples):
         for metadata in reversed(scene.trial_metadata):
             live = metadata.get("live")
@@ -1881,15 +1882,22 @@ def render_html(
                 updated_at = live["updated_at"]
                 time_tail = updated_at.partition("T")[2]
                 last_update = time_tail[:8] if time_tail else updated_at
+                step = live.get("step")
+                if isinstance(step, int) and not isinstance(step, bool):
+                    live_step = step
                 break
         if last_update is not None:
             break
     running_banner = ""
     if refresh_seconds is not None:
+        # The marker's step is the current trial's live counter: the rail below
+        # only carries played steps once trial records exist, so mid-first-trial
+        # this banner is the only nonzero progress readout.
+        step_note = "" if live_step is None else f" · step {live_step}"
         update = "" if last_update is None else f" · last update {_escape(last_update)}"
         running_banner = (
             '<div class="running-banner">RUNNING — refreshes every '
-            f"{_escape(refresh_seconds)}s{update}</div>"
+            f"{_escape(refresh_seconds)}s{step_note}{update}</div>"
         )
     document = f"""<!doctype html>
 <html lang="en">
