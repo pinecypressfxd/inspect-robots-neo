@@ -46,6 +46,7 @@ class FakeAgxRobot:
         self.move_j_calls: list[tuple[float, ...]] = []
         self.damped_stops = 0
         self.motion_resets = 0
+        self.effectors: list[FakeEffector] = []
         # None: derive the per-joint enable flags from `enabled`; a list lets
         # tests script joints that lag behind (or never confirm) a disable.
         self.joints_enable: list[bool] | None = None
@@ -110,4 +111,6 @@ class FakeAgxRobot:
 
     def init_effector(self, kind: str) -> FakeEffector:
         self.effector_kind = kind
-        return FakeEffector()
+        effector = FakeEffector()
+        self.effectors.append(effector)
+        return effector

@@ -14,7 +14,14 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 
 from inspect_robots_nero._arm import NeroArm, clamp_to_joint_envelope
-from inspect_robots_nero._config import CAN_CHANNELS, HOME_LEFT, HOME_RIGHT
+from inspect_robots_nero._config import (
+    CAN_CHANNELS,
+    GRIPPER_FORCE,
+    GRIPPER_INIT_WIDTH_M,
+    HOME_LEFT,
+    HOME_RIGHT,
+)
+from inspect_robots_nero._gripper import NeroGripper
 
 HOMES: Mapping[str, Sequence[float]] = {"left": HOME_LEFT, "right": HOME_RIGHT}
 
@@ -52,11 +59,14 @@ def home_arms(
     enable_retries: int = 3,
     retry_pause_s: float = 0.5,
 ) -> None:
-    """Enable every arm, switch to position mode, and move_j it to home.
+    """Enable every arm, move_j it to home, and open both grippers fully.
 
     ``enable()`` returns falsy both for a refused enable and for an arm that
     is already enabled (firmware semantics), so a falsy return retries a few
     times and then accepts the state when the per-joint flags say enabled.
+    The grippers open to ``GRIPPER_INIT_WIDTH_M`` so home lands in a known
+    clean state; without this they keep the previous run's width (a partially
+    closed left gripper after a grasp).
     """
     for arm in arms.values():
         # A latched e-stop (from damped_disable) makes the firmware ignore
@@ -79,6 +89,10 @@ def home_arms(
         arm.set_position_mode()
     for side, arm in arms.items():
         arm.move_j(clamp_to_joint_envelope(list(HOMES[side])).tolist())
+    # Issued while the arms travel so the gripper settle overlaps the move;
+    # home is a clean state, so anything held at home time is released here.
+    for arm in arms.values():
+        NeroGripper(arm, sleep=sleep).move(GRIPPER_INIT_WIDTH_M, GRIPPER_FORCE)
     sleep(wait_s)
 
 

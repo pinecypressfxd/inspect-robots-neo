@@ -5,7 +5,12 @@ from __future__ import annotations
 import pytest
 
 from inspect_robots_nero._arm import NeroArm
-from inspect_robots_nero._config import HOME_LEFT, HOME_RIGHT
+from inspect_robots_nero._config import (
+    GRIPPER_FORCE,
+    GRIPPER_INIT_WIDTH_M,
+    HOME_LEFT,
+    HOME_RIGHT,
+)
 from inspect_robots_nero._tools import build_arms, connect_all, disable_arms, home_arms
 
 from .fakes import FakeAgxRobot
@@ -35,6 +40,16 @@ def test_home_arms_moves_both_arms_to_config_home() -> None:
     for robot in robots.values():
         assert robot.enabled
         assert robot.mode == "normal"
+
+
+def test_home_arms_opens_both_grippers_to_init_width() -> None:
+    arms, robots = _connected_arms()
+    home_arms(arms, wait_s=0.0, sleep=lambda _seconds: None)
+    for robot in robots.values():
+        assert robot.effector_kind == "AGX_GRIPPER"
+        # Home is a clean state: each gripper is commanded fully open once,
+        # releasing whatever width the previous run left (e.g. a grasp).
+        assert robot.effectors[0].moves == [(GRIPPER_INIT_WIDTH_M, GRIPPER_FORCE)]
 
 
 def test_home_arms_raises_when_an_arm_fails_to_enable() -> None:
