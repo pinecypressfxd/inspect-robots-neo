@@ -5,7 +5,7 @@ two-step start, stop, verdicts, live reasoning feed) plus a JSON API over
 stdlib ``http.server``. Start spawns the attended eval on a pty:
 
     uv run --no-sync inspect-robots "<instruction>" --policy agent \\
-        -P model=gpt-6-astra -P base_url=<url> -P api_key_env=EXPLABS_API_KEY \\
+        -P model=gpt-5.6-luna -P base_url=<url> -P api_key_env=EXPLABS_API_KEY \\
         -P max_speed_frac=<frac> --embodiment nero -E operator_reset_confirm=False
 
 The pty is the ONLY control channel: stop writes ``/stop``, verdicts write
@@ -55,7 +55,7 @@ if TYPE_CHECKING:
 
 DEFAULT_PORT = 8400
 DEFAULT_HOST = "127.0.0.1"
-DEFAULT_MODEL = "gpt-6-astra"
+DEFAULT_MODEL = "gpt-5.6-luna"
 DEFAULT_BASE_URL = "https://api.experientiallabs.ai/v1"
 DEFAULT_API_KEY_ENV = "EXPLABS_API_KEY"
 DEFAULT_MAX_SPEED_FRAC = 0.05
@@ -1945,7 +1945,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--model",
         default=DEFAULT_MODEL,
-        help="model id for the agent policy (default: gpt-6-astra)",
+        help="model id for the agent policy (default: gpt-5.6-luna)",
     )
     parser.add_argument(
         "--base-url",

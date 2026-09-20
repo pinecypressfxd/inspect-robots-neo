@@ -48,19 +48,19 @@ assets are required).
 
     export OPENAI_API_KEY=...
     inspect-robots "put the cup on the pad with left arm" \
-      --policy agent -P model=openai/gpt-6-astra -P max_speed_frac=0.05 \
+      --policy agent -P model=openai/gpt-5.6-luna -P max_speed_frac=0.05 \
       --embodiment nero
 
 The Astra model id above was current as of September 2026; confirm with
 `curl -s https://api.openai.com/v1/models -H "Authorization: Bearer $OPENAI_API_KEY" | grep -i astra`
 and record the chosen id here. Confirmed lab configuration (September 2026)
 runs Astra through the experientiallabs proxy, where the model id is
-`gpt-6-astra` (no provider prefix; a custom `base_url` passes the model id
+`gpt-5.6-luna` (no provider prefix; a custom `base_url` passes the model id
 through verbatim):
 
     export EXPLABS_API_KEY=...
     inspect-robots "put the cup on the pad with left arm" \
-      --policy agent -P model=gpt-6-astra \
+      --policy agent -P model=gpt-5.6-luna \
       -P base_url=https://api.experientiallabs.ai/v1 \
       -P api_key_env=EXPLABS_API_KEY -P max_speed_frac=0.05 \
       --embodiment nero
@@ -149,14 +149,14 @@ history viewer. Run it from the repo root:
 
     python plugins/inspect-robots-nero/scripts/mission_console.py [--port 8400] [--host 127.0.0.1] \
         [--camera NAME=DEVICE ...] [--max-speed-frac 0.05] \
-        [--model gpt-6-astra] [--base-url URL] [--api-key-env EXPLABS_API_KEY] \
+        [--model gpt-5.6-luna] [--base-url URL] [--api-key-env EXPLABS_API_KEY] \
         [--history-url http://127.0.0.1:8300/] [--log-dir /tmp]
 
 `--camera` takes the embodiment's `name=device` form (repeatable) and only
 overrides that camera's device node. Start spawns, on a pty:
 
     uv run --no-sync inspect-robots "<instruction>" --policy agent \
-        -P model=gpt-6-astra -P base_url=https://api.experientiallabs.ai/v1 \
+        -P model=gpt-5.6-luna -P base_url=https://api.experientiallabs.ai/v1 \
         -P api_key_env=EXPLABS_API_KEY -P max_speed_frac=0.05 \
         --embodiment nero -E operator_reset_confirm=False
 
