@@ -1648,6 +1648,18 @@ const stopBtn = document.getElementById("stop");
 const cancelBtn = document.getElementById("cancel");
 const policySel = document.getElementById("policy");
 const input = document.getElementById("instruction");
+// The checkpoint's exact training task string. Pure-vla runs submit the
+// instruction verbatim as the prompt, and the skill policy only tracks its
+// trained phrasing: near-variants (a comma, "then") stall after the trained
+// half. Prefilled for vla runs, always editable.
+const TRAINED_PROMPT = __TRAINED_PROMPT__;
+function prefillTrainedPrompt() {
+  if (policySel.value === "vla" && input.value.trim() === "" && TRAINED_PROMPT) {
+    input.value = TRAINED_PROMPT;
+  }
+}
+policySel.addEventListener("change", prefillTrainedPrompt);
+prefillTrainedPrompt();
 const statusBox = document.getElementById("status");
 const verdicts = document.getElementById("verdicts");
 const feedEl = document.getElementById("feed");
@@ -1908,8 +1920,28 @@ setInterval(pollFeed, 1000);
 """
 
 
-def render_page(camera_names: Sequence[str], history_url: str) -> bytes:
-    """Render the console page; every interpolation is escaped exactly once."""
+def _trained_prompt() -> str:
+    """The VLA checkpoint's training task string, or "" without the plugin.
+
+    The console itself stays importable with only core installed; the prefill
+    simply stays empty when the vla plugin is absent (vla runs would fail at
+    spawn anyway without its registered policy).
+    """
+    try:
+        from inspect_robots_vla._config import TRAINED_SKILL_PROMPT
+    except ImportError:
+        return ""
+    return str(TRAINED_SKILL_PROMPT)
+
+
+def render_page(camera_names: Sequence[str], history_url: str, trained_prompt: str) -> bytes:
+    """Render the console page; every interpolation is escaped exactly once.
+
+    The trained prompt lands inside a script block, so it is embedded as a
+    JSON string literal with ``<`` neutralized (HTML entities do not decode
+    inside script elements; the replace keeps a future prompt edit from
+    closing the block).
+    """
     tiles = "".join(
         '<figure><img data-cam="'
         + html.escape(name, quote=True)
@@ -1925,7 +1957,9 @@ def render_page(camera_names: Sequence[str], history_url: str) -> bytes:
         for name in camera_names
     )
     head = _PAGE_HEAD.replace("__HISTORY_URL__", html.escape(history_url, quote=True))
-    return (head + tiles + _PAGE_TAIL).encode("utf-8")
+    prompt_literal = json.dumps(trained_prompt).replace("<", "\\u003c")
+    tail = _PAGE_TAIL.replace("__TRAINED_PROMPT__", prompt_literal)
+    return (head + tiles + tail).encode("utf-8")
 
 
 def _policy_namespace(base: argparse.Namespace, policy: str) -> argparse.Namespace:
@@ -1949,8 +1983,22 @@ def build_command(namespace: argparse.Namespace) -> tuple[list[str], list[str]]:
         "operator_reset_confirm=False",
     ]
     if namespace.policy in ("vla", "umi-replay"):
-        # Pure VLA baseline: the same instruction is the trained prompt.
-        suffix = [*common, "--policy", "umi-replay", "-P", "prompt=__INSTRUCTION__"]
+        # Pure VLA baseline: the same instruction is the trained prompt. The
+        # embodiment also paces at the checkpoint's trained action_freq
+        # (10 Hz): at the nero default 30 Hz the 20-step chunk plays in 0.7 s
+        # instead of the trained 2.0 s and then stalls for the next inference
+        # round trip, which reads as fast-then-frozen motion.
+        suffix = [
+            *common,
+            "--policy",
+            "umi-replay",
+            "-P",
+            "prompt=__INSTRUCTION__",
+            "-P",
+            "control_hz=10",
+            "-E",
+            "control_hz=10",
+        ]
     elif namespace.policy == "hybrid":
         suffix = [
             *common,
@@ -2085,7 +2133,7 @@ def main(argv: list[str] | None = None) -> int:
     exporter = LerobotExporter(Path(__file__).with_name("export_lerobot.py"), Path(args.log_dir))
     runs = RunManager(prefix, suffix, Path(args.log_dir), exporter)
     armtools = ArmToolRunner(Path(__file__).with_name("arm_tools.py"), Path(args.log_dir))
-    page_html = render_page(pool.names, args.history_url)
+    page_html = render_page(pool.names, args.history_url, _trained_prompt())
     server = MissionServer(
         (args.host, args.port),
         pool,
