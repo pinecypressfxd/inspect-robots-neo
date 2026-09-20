@@ -389,6 +389,7 @@ class HybridPolicy(PolicyBase):
         api_key_env: str | None = None,
         *,
         vla_base_url: str = VLA_BASE_URL,
+        wire: str = "chat",
         effort: str | None = None,
         prompt: str | None = None,
         submit_images: Sequence[str] | str = SUBMIT_IMAGES,
@@ -464,7 +465,14 @@ class HybridPolicy(PolicyBase):
                 api_key_env=api_key_env,
                 env=environ,
             )
-            owned_llm = ChatClient(provider)
+            if wire == "responses":
+                from inspect_robots_agent._responses import ResponsesClient
+
+                owned_llm = ResponsesClient(provider)
+            elif wire != "chat":
+                raise ConfigError(f"hybrid wire must be 'chat' or 'responses', got {wire!r}")
+            else:
+                owned_llm = ChatClient(provider)
             self._llm: LlmWire = _EffortLlm(owned_llm, effort)
             self._effort = effort
         else:
