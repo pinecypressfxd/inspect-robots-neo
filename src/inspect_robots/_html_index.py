@@ -31,6 +31,11 @@ class IndexEntry:
     error: str | None
     # Whether any trial in the run ended with the "success" termination reason.
     success: bool = False
+    # Run start (eval log created) and end (stats.completed_at) ISO stamps
+    # with the run duration in seconds; None on logs without stats.
+    started_at: str | None = None
+    completed_at: str | None = None
+    duration_s: float | None = None
 
 
 _ERROR_LIMIT = 160

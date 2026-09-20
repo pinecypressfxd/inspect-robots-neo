@@ -2242,6 +2242,9 @@ def _index_entry(log: EvalLog, log_path: Path, page: str) -> IndexEntry:
         termination=_index_termination(log),
         error=log.error,
         success=success,
+        started_at=log.stats.started_at if log.stats is not None else None,
+        completed_at=log.stats.completed_at if log.stats is not None else None,
+        duration_s=log.stats.duration_s if log.stats is not None else None,
     )
 
 

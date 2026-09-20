@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from inspect_robots._html_index import IndexEntry
 from inspect_robots._library import (
     group_library,
@@ -245,3 +247,26 @@ def test_task_page_tab_click_script_is_wired_once() -> None:
 
     assert html.count('addEventListener("click"') == 1
     assert 'document.querySelectorAll("button.tab")' in html
+
+
+def test_task_card_and_page_show_last_run_timing(tmp_path: Path) -> None:
+    from inspect_robots._library import render_library, render_task_page
+
+    entry = _entry(
+        "put the cup on the pad",
+        started_at="2026-09-20T08:00:00+00:00",
+        completed_at="2026-09-20T08:01:30+00:00",
+        duration_s=90.0,
+    )
+    html = render_library(group_library([entry]))
+    assert "last run 2026-09-20T08:00:00+00:00 → 2026-09-20T08:01:30+00:00" in html
+    assert "· 90s" in html
+    page = render_task_page(group_library([entry])[0])
+    assert "last run 2026-09-20T08:00:00+00:00 →" in page
+
+
+def test_task_card_omits_timing_without_stats() -> None:
+    from inspect_robots._library import render_library
+
+    html = render_library(group_library([_entry("t")]))  # no timing fields set
+    assert "last run" not in html

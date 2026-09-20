@@ -155,6 +155,9 @@ a { color: var(--link); }
 .task-card:hover { background: var(--bg); }
 .task-card .instruction { color: var(--link); font-weight: 650; overflow-wrap: anywhere; }
 .task-card .stats { color: var(--muted); margin-top: 3px; }
+.timing { color: var(--muted); font-size: 12px; margin-top: 2px;
+  font-variant-numeric: tabular-nums; }
+header .timing { margin-top: 2px; }
 .task-card .policies { color: var(--muted); margin-top: 3px; font-size: 12px; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 .chip {
@@ -208,14 +211,25 @@ def _task_card(task: LibraryTask) -> str:
         f"{len(task.runs)} {runs_word} · success {success_fraction(task)} · "
         f"mean score {_number(mean_score(task))}"
     )
+    timing = _latest_timing(task)
+    timing_line = f'<div class="timing">{timing}</div>' if timing else ""
     return (
         f'<a class="task-card" href="task-{_escape(task.slug)}.html"{data_policy} '
         f'data-text="{_escape(" ".join([task.instruction, *policies]))}">'
         f'<div class="instruction" title="{_escape(task.instruction)}">'
         f"{_escape(task.instruction)}</div>"
         f'<div class="stats">{stats}</div>'
-        f"{policy_line}</a>"
+        f"{timing_line}{policy_line}</a>"
     )
+
+
+def _latest_timing(task: LibraryTask) -> str:
+    """The newest run's start/end stamps and duration, e.g. for the card."""
+    for run in task.runs:
+        if run.started_at and run.completed_at:
+            duration = "" if run.duration_s is None else f" · {_number(run.duration_s)}s"
+            return f"last run {_escape(run.started_at)} → {_escape(run.completed_at)}{duration}"
+    return ""
 
 
 def _error_cell(error: str | None) -> str:
@@ -424,6 +438,8 @@ def render_task_page(task: LibraryTask, *, refresh_seconds: int | None = None) -
         f"{len(task.runs)} {runs_word} · success {success_fraction(task)} · "
         f"mean score {_number(mean_score(task))}"
     )
+    timing = _latest_timing(task)
+    timing_row = f'<div class="timing">{timing}</div>' if timing else ""
     # Runs are newest first, so the first run with a page is the default tab.
     first_enabled = next(
         (index for index, run in enumerate(task.runs) if run.page is not None), None
@@ -452,6 +468,7 @@ def render_task_page(task: LibraryTask, *, refresh_seconds: int | None = None) -
   <a class="back" href="index.html">&larr; Task library</a>
   <h1>{_escape(task.instruction)}</h1>
   <div class="meta">{stats}</div>
+  {timing_row}
   {badges_row}
 </div></header>
 <main>
