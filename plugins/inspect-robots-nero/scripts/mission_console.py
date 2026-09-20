@@ -772,12 +772,28 @@ class RunFeed:
                     messages = self._assign(raw_messages, source, since)
                 actions = _actions_tail(doc, run)
                 wire = _wire_note(run)
+            tools: list[dict[str, Any]] = []
+            for message in messages:
+                for tool in message.get("tools") or []:
+                    entry = dict(tool)
+                    entry["seq"] = message["seq"]
+                    tools.append(entry)
+            if wire is not None and wire.get("tool"):
+                tools.append(
+                    {
+                        "name": str(wire["tool"]),
+                        "arguments": "",
+                        "note": str(wire.get("note", "")),
+                        "seq": self._max_seq,
+                    }
+                )
             return {
                 "seq": self._max_seq,
                 "live": live,
                 "messages": messages,
                 "actions": actions,
                 "wire": wire,
+                "tools": tools,
             }
 
     def _assign(
@@ -1486,6 +1502,16 @@ _PAGE_HEAD = """<!doctype html>
   .cams figcaption .mode { float: right; color: #5f7186; }
   .controls { display: flex; gap: 8px; padding: 8px 16px; align-items: center; flex-wrap: wrap; }
   #estop { background: #b00; color: #fff; font-weight: bold; }
+  .tool-line { margin: 2px 0; overflow-wrap: anywhere; }
+  .tool-name { font-weight: bold; padding: 0 6px; border-radius: 4px;
+    background: #d7dce3; color: #20242b; margin-right: 4px; }
+  .tool-line.tool-move_to .tool-name { background: #19723b; color: #fff; }
+  .tool-line.tool-set_gripper .tool-name { background: #8a5700; color: #fff; }
+  .tool-line.tool-delegate_skill .tool-name { background: #7a55b5; color: #fff; }
+  .tool-line.tool-done .tool-name,
+  .tool-line.tool-give_up .tool-name { background: #a12a2a; color: #fff; }
+  .tool-args { color: var(--fg, #333); font-family: ui-monospace, monospace; font-size: 12px; }
+  .tool-note { color: #68707d; }
   #home:disabled { opacity: 0.5; }
   #instruction { flex: 1; min-width: 260px; padding: 8px; background: #171d24; color: inherit;
                  border: 1px solid #2a3340; border-radius: 4px; }
@@ -1547,6 +1573,8 @@ _PAGE_TAIL = """</div>
     <div class="panel"><h2>last actions</h2>
       <div class="panelbody" id="actionbody">no data yet</div></div>
   </div>
+  <div class="panel"><h2>tool timeline</h2>
+    <div id="toolbody" class="panelbody">no tool calls yet</div></div>
   <div class="panel"><h2>run terminal (prompts appear here)</h2>
     <div id="ptybody" class="panelbody">no output yet</div></div>
   <div class="panel"><h2>reasoning feed (newest pinned)</h2><div id="feed">no data yet</div></div>
@@ -1698,10 +1726,42 @@ function renderActions(actions) {
   actionBody.replaceChildren(...lines.map(textLine));
 }
 
+function renderTools(tools) {
+  const body = document.getElementById("toolbody");
+  if (!body) { return; }
+  if (!tools || !tools.length) { body.textContent = "no tool calls yet"; return; }
+  const seen = new Set([...body.children].map(function (node) { return node.dataset.seq; }));
+  for (const tool of tools) {
+    if (seen.has(String(tool.seq))) { continue; }
+    const line = document.createElement("div");
+    line.className = "tool-line tool-" + tool.name;
+    line.dataset.seq = tool.seq;
+    const label = document.createElement("span");
+    label.className = "tool-name";
+    label.textContent = tool.name;
+    line.appendChild(label);
+    if (tool.arguments) {
+      const args = document.createElement("span");
+      args.className = "tool-args";
+      args.textContent = "(" + tool.arguments + ")";
+      line.appendChild(args);
+    }
+    if (tool.note) {
+      const note = document.createElement("span");
+      note.className = "tool-note";
+      note.textContent = " " + tool.note;
+      line.appendChild(note);
+    }
+    body.prepend(line);
+  }
+  while (body.children.length > 200) { body.lastChild.remove(); }
+}
+
 function renderFeed(feed) {
   renderLive(feed.live);
   renderWire(feed.wire);
   renderActions(feed.actions);
+  renderTools(feed.tools);
   const messages = feed.messages || [];
   if (!messages.length) { return; }
   if (feedEl.textContent === "no data yet") { feedEl.replaceChildren(); }
@@ -1819,7 +1879,7 @@ def build_command(namespace: argparse.Namespace) -> tuple[list[str], list[str]]:
     ]
     if namespace.policy == "umi-replay":
         # Pure VLA baseline: the same instruction is the trained prompt.
-        suffix = [*common, "--policy", "umi-replay", "-P", f"prompt=__INSTRUCTION__"]
+        suffix = [*common, "--policy", "umi-replay", "-P", "prompt=__INSTRUCTION__"]
     else:
         suffix = [
             *common,
