@@ -20,6 +20,7 @@ import math
 import os
 import re
 import uuid
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -29,8 +30,8 @@ if TYPE_CHECKING:
     from inspect_robots.types import Action, Observation, StepResult
 
 _SLUG_RE = re.compile(r"[^a-z0-9]+")
-# Leaves room for the filename's "_" + 8 hex chars + ".json.tmp" suffix inside a
-# 255-byte name, with headroom for filesystems that allow less.
+# Leaves room for the filename's "_" + stamp + hex + ".json.tmp" suffix inside
+# a 255-byte name, with headroom for filesystems that allow less.
 _SLUG_MAX = 200
 
 
@@ -41,6 +42,26 @@ def _slug(name: str) -> str:
     # the log body, and the filename's uuid suffix keeps distinct runs distinct
     # even when two long names truncate to the same slug.
     return _SLUG_RE.sub("-", name.lower()).strip("-")[:_SLUG_MAX].strip("-") or "eval"
+
+
+def _log_stem(name: str, created: str) -> str:
+    """Filename stem for one eval: task slug, local start time, uniqueness hex.
+
+    The stamp is the run's ``created`` instant in the operator's local
+    timezone (the log body already records UTC), so a directory listing reads
+    as wall clock; two runs started within the same second stay distinct via
+    the 4-hex suffix. Both sinks derive the stamp from the same field, so a
+    run's ``.live.json`` snapshot and final ``.json`` share one stem. An
+    unparseable ``created`` leaves the stem undated rather than failing the
+    write: naming must never lose a finished run.
+    """
+    stamp = ""
+    try:
+        local = datetime.fromisoformat(created).astimezone()
+        stamp = f"{local:%Y%m%d-%H%M%S}_"
+    except ValueError:
+        pass
+    return f"{_slug(name)}_{stamp}{uuid.uuid4().hex[:4]}"
 
 
 def _sanitize(obj: object) -> object:
@@ -91,7 +112,7 @@ class JsonLogSink:
     def on_eval_end(self, log: EvalLog) -> None:
         """Atomically serialize the final log and expose its path."""
         self.log_dir.mkdir(parents=True, exist_ok=True)
-        filename = f"{_slug(log.eval.task)}_{uuid.uuid4().hex[:8]}.json"
+        filename = f"{_log_stem(log.eval.task, log.eval.created)}.json"
         self.path = self.log_dir / filename
         tmp = self.path.with_suffix(".json.tmp")
         with tmp.open("w", encoding="utf-8") as fh:

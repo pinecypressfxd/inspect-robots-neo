@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import math
+import re
+from datetime import datetime
 from pathlib import Path
 from typing import Any, cast
 
@@ -11,7 +13,8 @@ import pytest
 
 from inspect_robots import eval, eval_set, read_eval_log
 from inspect_robots.log import EvalLog, EvalResults, EvalSpec, EvalStats
-from inspect_robots.logging import LiveLogSink
+from inspect_robots.logging import JsonLogSink, LiveLogSink
+from inspect_robots.logging.json_log import _log_stem
 from inspect_robots.logging.sink import NullSink
 from inspect_robots.mock import CubePickEmbodiment, ScriptedPolicy
 from inspect_robots.rollout import StepRecord, TrialRecord
@@ -47,6 +50,29 @@ def _transition(t: int = 0) -> StepRecord:
     action = Action(np.zeros(1))
     result = StepResult(observation)
     return StepRecord(t, observation, action, result)
+
+
+def test_log_names_carry_the_local_start_time(tmp_path: Path) -> None:
+    spec = _spec()
+    live = LiveLogSink(str(tmp_path))
+    live.on_eval_start(spec)
+    final = JsonLogSink(str(tmp_path))
+    final.on_eval_end(_final_log())
+
+    assert live.path is not None and final.path is not None
+    shape = re.compile(r"pick-cube_(\d{8}-\d{6})_[0-9a-f]{4}")
+    live_match = shape.fullmatch(live.path.name.removesuffix(".live.json"))
+    final_match = shape.fullmatch(final.path.name.removesuffix(".json"))
+    assert live_match and final_match
+    # The stamp is the run's created instant in the operator's local timezone,
+    # identical for the snapshot and the final log: the two files pair by stem.
+    stamp = f"{datetime.fromisoformat(spec.created).astimezone():%Y%m%d-%H%M%S}"
+    assert live_match.group(1) == stamp == final_match.group(1)
+
+
+def test_unparseable_created_leaves_the_log_stem_undated() -> None:
+    # Naming must never fail the write: a bad created degrades to slug + hex.
+    assert re.fullmatch(r"pick-cube_[0-9a-f]{4}", _log_stem("Pick / Cube", "not-a-time"))
 
 
 def _record(

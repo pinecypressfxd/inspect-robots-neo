@@ -6,7 +6,6 @@ import json
 import os
 import sys
 import time
-import uuid
 from collections.abc import Callable, Sequence
 from contextlib import suppress
 from dataclasses import dataclass, field
@@ -23,7 +22,7 @@ from inspect_robots.log import (
     SceneResult,
     _json_safe_scene_metadata,
 )
-from inspect_robots.logging.json_log import _sanitize, _slug
+from inspect_robots.logging.json_log import _log_stem, _sanitize
 from inspect_robots.transcript import judgement_source
 
 if TYPE_CHECKING:
@@ -139,7 +138,7 @@ class LiveLogSink:
             self._errored_trials = 0
             self._latencies = []
             self.log_dir.mkdir(parents=True, exist_ok=True)
-            self.path = self.log_dir / f"{_slug(spec.task)}_{uuid.uuid4().hex[:8]}.live.json"
+            self.path = self.log_dir / f"{_log_stem(spec.task, spec.created)}.live.json"
             now = self._clock()
             self._started_clock = now
             self._last_write_clock = None
