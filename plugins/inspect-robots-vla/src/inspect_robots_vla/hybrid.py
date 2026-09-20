@@ -960,9 +960,11 @@ class HybridPolicy(PolicyBase):
         )
         formatted += (
             "\n\nTrained skill policy: the skill policy was finetuned on exactly one "
-            f"prompt, {TRAINED_SKILL_PROMPT!r}. Delegate that one skill (verbatim "
-            "subgoal) for its contact-rich phase; every other part of the goal, "
-            "including anything after it, complete with move_to and set_gripper."
+            f"prompt, {TRAINED_SKILL_PROMPT!r}. When you delegate, phrase the "
+            "subgoal as a verbatim excerpt of that trained phrasing. Operator "
+            "guidance for this rig: delegate only the left-arm grasp-and-place "
+            "phase to the skill policy; complete the rest of the goal (the "
+            "right-arm take-away and any retreat) with move_to and set_gripper."
         )
         docs = self._embodiment_docs
         if docs is not None and docs.strip():

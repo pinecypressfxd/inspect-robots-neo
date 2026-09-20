@@ -8,10 +8,12 @@ through the policy factories (plan 0084). Wire facts (field names, CHW layout,
 
 from __future__ import annotations
 
-#: The VLA checkpoint's finetuning prompt (training task field). The skill
-#: policy generalizes only near this phrasing; the planner delegates exactly
-#: this skill once and completes the rest of the goal analytically.
-TRAINED_SKILL_PROMPT = "put the cup on the pad with left arm"
+#: The VLA checkpoint's finetuning prompt, verbatim from the training data's
+#: task field (meta/tasks.jsonl of VR-2026-0831-v0 and VR-2026-0901-v0, both
+#: carry this one string; single task_index 0). The skill policy generalizes
+#: only near this exact phrasing: near-variants (extra commas, "then") are
+#: distribution shifts that stall the rollout after the trained half.
+TRAINED_SKILL_PROMPT = "put the cup on the pad with left arm and take away the cup with right arm"
 
 VLA_BASE_URL = "http://127.0.0.1:10055"
 VLA_SUBMIT_TIMEOUT_S = 10.0
