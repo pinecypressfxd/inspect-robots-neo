@@ -93,10 +93,36 @@ class LlmWire(Protocol):
     """
 
     def complete(
-        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        *,
+        reasoning_effort: str | float | None = None,
     ) -> AssistantMessage:
         """One chat completion over the running conversation."""
         ...
+
+
+class _EffortLlm:
+    """Chat adapter that pins ``reasoning_effort`` on every completion.
+
+    Gateways that reject tool calls combined with a reasoning-effort field
+    (HTTP 400 "Function tools with reasoning_effort are not supported")
+    need the field either absent or ``"none"``; ``effort=None`` passes the
+    request through untouched.
+    """
+
+    def __init__(self, inner: LlmWire, effort: str | None) -> None:
+        self._inner = inner
+        self._effort = effort
+
+    def complete(
+        self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]
+    ) -> AssistantMessage:
+        """One completion with the configured effort (None leaves it unset)."""
+        if self._effort is None:
+            return self._inner.complete(messages, tools)
+        return self._inner.complete(messages, tools, reasoning_effort=self._effort)
 
 
 @dataclass(frozen=True)
@@ -358,6 +384,7 @@ class HybridPolicy(PolicyBase):
         api_key_env: str | None = None,
         *,
         vla_base_url: str = VLA_BASE_URL,
+        effort: str | None = None,
         prompt: str | None = None,
         submit_images: Sequence[str] | str = SUBMIT_IMAGES,
         state_key: str = STATE_KEY,
@@ -433,9 +460,11 @@ class HybridPolicy(PolicyBase):
                 env=environ,
             )
             owned_llm = ChatClient(provider)
-            self._llm: LlmWire = owned_llm
+            self._llm: LlmWire = _EffortLlm(owned_llm, effort)
+            self._effort = effort
         else:
             self._llm = llm
+            self._effort = None
         self._owned_llm = owned_llm
         owned_vla: VlaClient | None = None
         if vla is None:
