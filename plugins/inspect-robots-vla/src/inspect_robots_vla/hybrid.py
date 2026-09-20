@@ -960,11 +960,13 @@ class HybridPolicy(PolicyBase):
         )
         formatted += (
             "\n\nTrained skill policy: the skill policy was finetuned on exactly one "
-            f"prompt, {TRAINED_SKILL_PROMPT!r}. When you delegate, phrase the "
-            "subgoal as a verbatim excerpt of that trained phrasing. Operator "
-            "guidance for this rig: delegate only the left-arm grasp-and-place "
-            "phase to the skill policy; complete the rest of the goal (the "
-            "right-arm take-away and any retreat) with move_to and set_gripper."
+            f"prompt, {TRAINED_SKILL_PROMPT!r}, and only tracks that exact phrasing "
+            "(near-variants stall after the trained half). You decide the split: "
+            "delegate the whole trained skill with that phrasing verbatim, or "
+            "delegate one phase and complete the rest with move_to and set_gripper. "
+            "Every checkpoint, tracking interrupt, and time cap returns control to "
+            "you, so a stalled or drifting skill is recoverable: restage, re-delegate, "
+            "or finish the goal analytically."
         )
         docs = self._embodiment_docs
         if docs is not None and docs.strip():
