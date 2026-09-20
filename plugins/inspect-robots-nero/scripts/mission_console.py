@@ -413,6 +413,10 @@ class CameraPool:
             self._started.add(name)
         return camera
 
+    def any_started(self) -> bool:
+        """True while at least one camera is open (devices held)."""
+        return bool(self._started)
+
     def stop(self) -> None:
         """Stop every camera and release its device; idempotent, best effort."""
         with self._lock:
@@ -677,7 +681,7 @@ class RunManager:
     def homing_allowed(self) -> bool:
         """True when no run is active, or its episode was stopped (verdict wait)."""
         run = self.status()
-        return run.get("state") != "running" or self._stop_requested
+        return run.get("state") not in ("running", "external") or self._stop_requested
 
     def force_end(self) -> str | None:
         """Emergency end for a wedged run: ``/stop``, terminate, then kill.
@@ -705,19 +709,49 @@ class RunManager:
         return None
 
     def current(self) -> dict[str, Any] | None:
-        """Snapshot of the last run for the feed and frame routes; None if never."""
+        """Snapshot of the last run for the feed and frame routes; None if never.
+
+        When the console owns no run, a freshly-written ``*.live.json`` (an
+        eval launched outside the console, e.g. from a bare CLI command) is
+        reported as an ``external`` run so the tiles, tool timeline, and
+        feed follow it too: the camera nodes are exclusive, so the console
+        cannot stream live video while that process holds them.
+        """
         with self._lock:
             run = self._run
-            if run is None:
-                return None
-            return {
-                "state": "running" if run.exit_code is None else "ended",
-                "instruction": run.instruction,
-                "started_at": run.started_at,
-                "run_id": run.run_id,
-                "log": run.log_path,
-                "tail": list(run.tail),
-            }
+            if run is not None and (
+                run.exit_code is None or time.monotonic() - run.started_at < 120
+            ):
+                return {
+                    "state": "running" if run.exit_code is None else "ended",
+                    "instruction": run.instruction,
+                    "started_at": run.started_at,
+                    "run_id": run.run_id,
+                    "log": run.log_path,
+                    "tail": list(run.tail),
+                }
+        live = _newest_live_log(time.time() - 30.0)
+        if live is None:
+            return (
+                None
+                if run is None
+                else {
+                    "state": "running" if run.exit_code is None else "ended",
+                    "instruction": run.instruction,
+                    "started_at": run.started_at,
+                    "run_id": run.run_id,
+                    "log": run.log_path,
+                    "tail": list(run.tail),
+                }
+            )
+        return {
+            "state": "external",
+            "instruction": None,
+            "started_at": live.stat().st_mtime,
+            "run_id": -1,
+            "log": str(live),
+            "tail": [],
+        }
 
     def shutdown(self) -> None:
         """Best-effort graceful end for an active run: one ``/stop`` line.
@@ -1141,6 +1175,17 @@ class MissionRequestHandler(BaseHTTPRequestHandler):
             self._send_bytes(200, "text/html; charset=utf-8", self.server.page_html)
         elif path == "/api/status":
             status = self.server.runs.status()
+            if status["state"] == "idle":
+                display = self.server.runs.current()
+                if display is not None and display.get("state") in ("running", "external"):
+                    status["state"] = display["state"]
+                    status["log"] = display.get("log")
+            if status["state"] in ("running", "external") and self.server.pool.any_started():
+                # V4L2 nodes are exclusive: a CLI-launched eval cannot open the
+                # cameras while the console streams, so the console yields.
+                self.server.pool.stop()
+                print("[console] cameras released: a run outside the console holds them")
+            status["cameras_live"] = self.server.pool.any_started()
             status["arm_tool"] = self.server.armtools.describe()
             status["lerobot"] = self.server.exports.describe()
             status["verdict_pending"] = self.server.runs._stop_requested
@@ -1360,7 +1405,7 @@ class MissionRequestHandler(BaseHTTPRequestHandler):
             self._send_plain(404, f"unknown camera {name!r}\n")
             return
         run = self.server.runs.current()
-        if run is not None and run.get("state") == "running":
+        if run is not None and run.get("state") in ("running", "external"):
             frame, error = self._stored_run_frame(run, name)
             if frame is None:
                 self._send_plain(503, f"camera {name!r} unavailable: {error}\n")
@@ -1645,7 +1690,7 @@ function render(status) {
   verdicts.hidden = state === "idle";
   stopBtn.disabled = state !== "running";
   startBtn.disabled = state === "running";
-  if (state === "running" && tileMode !== "frames") {
+  if ((state === "running" || state === "external") && tileMode !== "frames") {
     // The run owns the cameras; switch the tiles to the run's stored frames.
     setTileMode("frames");
   } else if (state !== "running" && tileMode === "frames") {
