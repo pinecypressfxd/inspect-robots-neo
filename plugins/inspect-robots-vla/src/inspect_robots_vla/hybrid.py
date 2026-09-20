@@ -457,7 +457,7 @@ class HybridPolicy(PolicyBase):
         self._budget_llm_calls = budget_llm_calls
 
         environ = dict(os.environ) if env is None else env
-        owned_llm: ChatClient | None = None
+        owned_llm: LlmWire | None = None
         if llm is None:
             provider = resolve_provider(
                 model=model or environ.get(ENV_MODEL),
@@ -478,7 +478,7 @@ class HybridPolicy(PolicyBase):
         else:
             self._llm = llm
             self._effort = None
-        self._owned_llm = owned_llm
+        self._owned_llm = owned_llm  # LlmWire; close() uses duck-typed .close()
         owned_vla: VlaClient | None = None
         if vla is None:
             owned_vla = VlaClient(
