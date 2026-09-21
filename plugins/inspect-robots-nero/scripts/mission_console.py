@@ -790,6 +790,10 @@ class RunFeed:
         """Start with no sources and seq zero."""
         self._lock = threading.Lock()
         self._bases: dict[str, int] = {}
+        # Wire-fallback tool entries get stable NEGATIVE seqs: one per
+        # distinct decision, never colliding with message seqs (positive).
+        self._wire_notes: dict[str, int] = {}
+        self._wire_seq_next = -1
         self._max_seq = 0
 
     def build(self, run: Mapping[str, Any] | None, since: int) -> dict[str, Any]:
@@ -815,12 +819,23 @@ class RunFeed:
                     entry["seq"] = message["seq"]
                     tools.append(entry)
             if wire is not None and wire.get("tool"):
+                # One stable seq per distinct wire note: a fresh seq per poll
+                # would slip past the client's dedupe and stack duplicates of
+                # the same decision into the timeline every second.
+                key = f"{wire['tool']}|{wire.get('note', '')}"
+                wire_seq = self._wire_notes.get(key)
+                if wire_seq is None:
+                    if len(self._wire_notes) >= FEED_SOURCES:
+                        self._wire_notes.pop(next(iter(self._wire_notes)))
+                    self._wire_seq_next -= 1
+                    wire_seq = self._wire_seq_next
+                    self._wire_notes[key] = wire_seq
                 tools.append(
                     {
                         "name": str(wire["tool"]),
                         "arguments": "",
                         "note": str(wire.get("note", "")),
-                        "seq": self._max_seq,
+                        "seq": wire_seq,
                     }
                 )
             return {
@@ -1805,13 +1820,24 @@ function renderActions(actions) {
 function renderTools(tools) {
   const body = document.getElementById("toolbody");
   if (!body) { return; }
-  if (!tools || !tools.length) { body.textContent = "no tool calls yet"; return; }
+  // The feed delivers only NEW tool calls (seq-filtered delta), so an empty
+  // delta must never wipe the accumulated timeline: the placeholder shows
+  // only while nothing has been seen at all.
+  if (!tools || !tools.length) {
+    if (!body.children.length) { body.textContent = "no tool calls yet"; }
+    return;
+  }
+  if (!body.children.length) { body.replaceChildren(); }
   const seen = new Set([...body.children].map(function (node) { return node.dataset.seq; }));
   for (const tool of tools) {
     if (seen.has(String(tool.seq))) { continue; }
     const line = document.createElement("div");
     line.className = "tool-line tool-" + tool.name;
     line.dataset.seq = tool.seq;
+    const stamp = document.createElement("span");
+    stamp.className = "tool-note";
+    stamp.textContent = new Date().toTimeString().slice(0, 8) + " ";
+    line.appendChild(stamp);
     const label = document.createElement("span");
     label.className = "tool-name";
     label.textContent = tool.name;
