@@ -624,6 +624,70 @@ def test_retries_exhausted_and_client_errors_fail_fast() -> None:
     assert client_calls == 1
 
 
+def test_summary_demand_on_bare_reasoning_item_drops_it_and_retries() -> None:
+    """A 400 naming a reasoning item's summary is repaired by dropping it.
+
+    The gateway validates echoed reasoning items against the response schema
+    while every function_call_output already carries its summary, so the
+    add-summaries repair alone cannot help; the bare item (id only) is
+    dropped instead and the retried request succeeds.
+    """
+    inputs: list[list[dict[str, Any]]] = []
+    served_first = False
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal served_first
+        body = json.loads(request.content)
+        inputs.append(list(body["input"]))
+        if not served_first:
+            served_first = True
+            return httpx.Response(
+                200,
+                json=_response({"type": "reasoning", "id": "rs_1"}, _call("call_1")),
+            )
+        if any(item.get("type") == "reasoning" for item in body["input"]):
+            return httpx.Response(
+                400,
+                json={"error": {"message": "Missing required parameter: 'input[3].summary'"}},
+            )
+        return httpx.Response(200, json=_response(_message("done")))
+
+    client = _client(handler, backoff_s=0.0)
+    first = client.complete(
+        [{"role": "user", "content": "go"}],
+        [
+            {
+                "type": "function",
+                "function": {
+                    "name": "done",
+                    "description": "Finish.",
+                    "parameters": {"type": "object"},
+                },
+            }
+        ],
+    )
+    assert first.tool_calls and first.tool_calls[0].id == "call_1"
+
+    second = client.complete(
+        [
+            {"role": "user", "content": "go"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [_tool_call("call_1", "done", '{"summary":"ok"}')],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "done: ok"},
+        ],
+        [],
+    )
+
+    assert second.content == "done"
+    final = inputs[-1]
+    assert not any(item.get("type") == "reasoning" for item in final)
+    output_item = next(item for item in final if item.get("type") == "function_call_output")
+    assert output_item["summary"] == "done: ok"
+
+
 def test_close_closes_underlying_http_client() -> None:
     client = _client(lambda request: httpx.Response(200, json=_response()))
 

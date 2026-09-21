@@ -117,9 +117,18 @@ class ResponsesClient:
                     if "Unknown parameter" in response.text and _has_summaries(body):
                         body = _strip_summaries(body)
                         continue
-                    if "Missing required parameter" in response.text and not _has_summaries(body):
-                        body = _add_summaries(body)
-                        continue
+                    if "Missing required parameter" in response.text:
+                        # Two shapes demand a summary: a bare echoed reasoning
+                        # item (id only: the endpoint returned no
+                        # encrypted_content, so it carries no usable state --
+                        # drop it) or a function_call_output missing its field
+                        # (add it; idempotent when others already carry one).
+                        patched = _drop_bare_reasoning(body)
+                        if patched == body:
+                            patched = _add_summaries(body)
+                        if patched != body:
+                            body = patched
+                            continue
                 if response.status_code not in (429,) and response.status_code < 500:
                     raise RuntimeError(f"LLM request rejected — {last_error}")
             if attempt + 1 < self._max_retries:
@@ -151,6 +160,24 @@ def _strip_summaries(body: dict[str, Any]) -> dict[str, Any]:
         for item in input_items
     ]
     return body
+
+
+def _drop_bare_reasoning(body: dict[str, Any]) -> dict[str, Any]:
+    """Rebuild input without summary-less reasoning items.
+
+    A proxied endpoint can validate echoed reasoning items against the
+    response-side schema and demand a summary on them (400 "Missing required
+    parameter: 'input[N].summary'" pointing at a reasoning item). A bare item
+    (id only, no encrypted_content, no summary) holds nothing the server can
+    use with ``store=false``, so dropping it is a lossless repair; items that
+    do carry state stay.
+    """
+    kept = [
+        item
+        for item in body.get("input", [])
+        if not (item.get("type") == "reasoning" and "summary" not in item)
+    ]
+    return {**body, "input": kept}
 
 
 def _add_summaries(body: dict[str, Any]) -> dict[str, Any]:
