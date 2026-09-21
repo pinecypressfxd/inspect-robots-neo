@@ -108,6 +108,17 @@ class ResponsesClient:
                             self._raw_items_by_call_id[str(item["call_id"])] = output
                     return message
                 last_error = f"HTTP {response.status_code}: {response.text[:500]}"
+                if response.status_code == 400 and "encrypted content" in response.text.lower():
+                    # A proxy can issue encrypted reasoning items and then
+                    # reject them echoed back ("could not be verified ...
+                    # could not be decrypted or parsed"), e.g. when its pool
+                    # routes the follow-up elsewhere. Drop every reasoning
+                    # item and retry: with store=false the request stays
+                    # valid, the model just re-reasons per turn.
+                    patched = _drop_reasoning(body)
+                    if patched != body:
+                        body = patched
+                        continue
                 if response.status_code == 400 and "summary" in response.text:
                     # Proxied Responses endpoints flap on the function_call_output
                     # summary field: one request demands it ("Missing required
@@ -177,6 +188,17 @@ def _drop_bare_reasoning(body: dict[str, Any]) -> dict[str, Any]:
         for item in body.get("input", [])
         if not (item.get("type") == "reasoning" and "summary" not in item)
     ]
+    return {**body, "input": kept}
+
+
+def _drop_reasoning(body: dict[str, Any]) -> dict[str, Any]:
+    """Rebuild input without any reasoning items at all.
+
+    The repair for a proxy that issued encrypted reasoning content but fails
+    to verify it echoed back: without the items the request stays valid under
+    ``store=false`` and the model re-reasons from scratch on the next turn.
+    """
+    kept = [item for item in body.get("input", []) if item.get("type") != "reasoning"]
     return {**body, "input": kept}
 
 

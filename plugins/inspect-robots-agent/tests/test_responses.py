@@ -688,6 +688,84 @@ def test_summary_demand_on_bare_reasoning_item_drops_it_and_retries() -> None:
     assert output_item["summary"] == "done: ok"
 
 
+def test_encrypted_content_rejection_drops_reasoning_items_and_retries() -> None:
+    """A 400 that cannot verify echoed encrypted reasoning drops those items.
+
+    The proxy issued the encrypted reasoning item itself, then fails to
+    verify it on the way back (its pool routed the follow-up elsewhere);
+    dropping every reasoning item keeps the store=false request valid.
+    """
+    inputs: list[list[dict[str, Any]]] = []
+    served_first = False
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal served_first
+        body = json.loads(request.content)
+        inputs.append(list(body["input"]))
+        if not served_first:
+            served_first = True
+            return httpx.Response(
+                200,
+                json=_response(
+                    {
+                        "type": "reasoning",
+                        "id": "rs_1",
+                        "summary": [{"type": "summary_text", "text": "thinking"}],
+                        "encrypted_content": "gAAAA-verifiable-only-once",
+                    },
+                    _call("call_1"),
+                ),
+            )
+        if any(item.get("type") == "reasoning" for item in body["input"]):
+            return httpx.Response(
+                400,
+                json={
+                    "error": {
+                        "message": (
+                            "The encrypted content for item rs_1 could not be verified. "
+                            "Reason: Encrypted content could not be decrypted or parsed."
+                        )
+                    }
+                },
+            )
+        return httpx.Response(200, json=_response(_message("done")))
+
+    client = _client(handler, backoff_s=0.0)
+    first = client.complete(
+        [{"role": "user", "content": "go"}],
+        [
+            {
+                "type": "function",
+                "function": {
+                    "name": "done",
+                    "description": "Finish.",
+                    "parameters": {"type": "object"},
+                },
+            }
+        ],
+    )
+    assert first.tool_calls and first.tool_calls[0].id == "call_1"
+
+    second = client.complete(
+        [
+            {"role": "user", "content": "go"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [_tool_call("call_1", "done", '{"summary":"ok"}')],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": "done: ok"},
+        ],
+        [],
+    )
+
+    assert second.content == "done"
+    assert not any(item.get("type") == "reasoning" for item in inputs[-1])
+    # The paired function_call and its output survive the repair.
+    kinds = [item.get("type") for item in inputs[-1]]
+    assert "function_call" in kinds and "function_call_output" in kinds
+
+
 def test_close_closes_underlying_http_client() -> None:
     client = _client(lambda request: httpx.Response(200, json=_response()))
 
