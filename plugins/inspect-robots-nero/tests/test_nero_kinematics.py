@@ -95,6 +95,37 @@ def test_unreachable_target_raises() -> None:
         kinematics.solve(unreachable, poses["right"], q_seed)
 
 
+def test_solve_retries_from_random_seeds_before_declaring_unreachable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Non-convergence from one seed retries others before giving up.
+
+    A workspace-edge target is often reachable only from another basin, so a
+    ``None`` from ``_iterate`` must never be the final verdict; only the given
+    seed plus every random restart failing raises.
+    """
+    kinematics = NeroKinematics(_urdf_path(), restarts=3)
+    seeds: list[np.ndarray] = []
+
+    def fake_iterate(
+        left_target: np.ndarray, right_target: np.ndarray, q_start: np.ndarray
+    ) -> np.ndarray | None:
+        del left_target, right_target
+        seeds.append(np.asarray(q_start, dtype=np.float64).copy())
+        return None
+
+    monkeypatch.setattr(kinematics, "_iterate", fake_iterate)
+    with pytest.raises(NeroKinematicsError, match="4 seeds"):
+        kinematics.solve(np.eye(4), np.eye(4), np.zeros(kinematics._model.nq))
+
+    assert len(seeds) == 4  # the given seed plus three restarts
+    lower = np.asarray(kinematics._model.lowerPositionLimit)
+    upper = np.asarray(kinematics._model.upperPositionLimit)
+    assert all(
+        np.all(seed >= lower - 1e-12) and np.all(seed <= upper + 1e-12) for seed in seeds[1:]
+    ), "restart seeds must sample inside the joint limits"
+
+
 def test_workspace_bounds_contain_the_home_pose() -> None:
     kinematics = _kinematics()
     bounds = kinematics.sample_workspace_bounds()

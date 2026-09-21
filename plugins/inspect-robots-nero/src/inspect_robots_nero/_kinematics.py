@@ -64,6 +64,7 @@ class NeroKinematics:
         tcp_translation_m: tuple[float, float, float] = (0.0, 0.0, 0.18),
         tcp_rotation_rpy_rad: tuple[float, float, float] = (0.0, -1.5707963267948966, 0.0),
         max_iterations: int = 60,
+        restarts: int = 8,
         position_tol_m: float = 1e-3,
         orientation_tol_rad: float = 1e-3,
         max_joint_step_rad: float = 0.1,
@@ -77,6 +78,7 @@ class NeroKinematics:
 
         self._pin = pin
         self._max_iterations = int(max_iterations)
+        self._restarts = int(restarts)
         self._position_tol = float(position_tol_m)
         self._orientation_tol = float(orientation_tol_rad)
         self._max_joint_step = float(max_joint_step_rad)
@@ -163,9 +165,43 @@ class NeroKinematics:
         right_target: np.ndarray,
         q_seed: np.ndarray,
     ) -> np.ndarray:
-        """Solve both arms' IK; raises NeroKinematicsError when a target is unreachable."""
+        """Solve both arms' IK; raises NeroKinematicsError when a target is unreachable.
+
+        The given seed (the current configuration) runs first, so the nearest
+        solution wins when it converges; each failure retries from a fresh
+        random configuration, because a target at the workspace edge is often
+        reachable only from another basin -- a single-seed solver mistakes a
+        local minimum for unreachability. The error fires only after every
+        restart failed.
+        """
+        q = self._iterate(left_target, right_target, np.asarray(q_seed, dtype=np.float64))
+        if q is not None:
+            return q
+        rng = np.random.default_rng(self._seed)
+        lower = np.asarray(self._model.lowerPositionLimit)
+        upper = np.asarray(self._model.upperPositionLimit)
+        for _ in range(self._restarts):
+            q = self._iterate(left_target, right_target, rng.uniform(lower, upper))
+            if q is not None:
+                return q
+        raise NeroKinematicsError(
+            "dual-arm IK did not converge within "
+            f"{self._max_iterations} iterations from {self._restarts + 1} seeds "
+            f"(position tol {self._position_tol} m, "
+            f"orientation tol {self._orientation_tol} rad); target may be out of the workspace"
+        )
+
+    def _iterate(
+        self, left_target: np.ndarray, right_target: np.ndarray, q_start: np.ndarray
+    ) -> np.ndarray | None:
+        """One damped-least-squares run from ``q_start``; ``None`` without convergence.
+
+        The caller treats ``None`` as "retry from another seed", never as a
+        hard verdict: non-convergence from one configuration says nothing
+        about reachability from another.
+        """
         pin = self._pin
-        q = np.asarray(q_seed, dtype=np.float64).copy()
+        q = np.asarray(q_start, dtype=np.float64).copy()
         targets = {"left": np.asarray(left_target), "right": np.asarray(right_target)}
         lower = np.asarray(self._model.lowerPositionLimit)
         upper = np.asarray(self._model.upperPositionLimit)
@@ -200,11 +236,7 @@ class NeroKinematics:
             dq = dq + nullspace @ (self._posture_gain * (self._posture - q))
             dq = np.clip(dq, -self._max_joint_step, self._max_joint_step)
             q = np.clip(q + dq, lower, upper)
-        raise NeroKinematicsError(
-            "dual-arm IK did not converge within "
-            f"{self._max_iterations} iterations (position tol {self._position_tol} m, "
-            f"orientation tol {self._orientation_tol} rad); target may be out of the workspace"
-        )
+        return None
 
     def sample_workspace_bounds(
         self, *, margin_m: float = 0.02
