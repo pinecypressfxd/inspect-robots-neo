@@ -25,7 +25,7 @@ class ResponsesClient:
         provider: Provider,
         *,
         timeout_s: float = 120.0,
-        max_retries: int = 3,
+        max_retries: int = 8,
         backoff_s: float = 1.0,
         transport: httpx.BaseTransport | None = None,
         capture: WireCapture | None = None,
@@ -112,10 +112,12 @@ class ResponsesClient:
                     # A proxy can issue encrypted reasoning items and then
                     # reject them echoed back ("could not be verified ...
                     # could not be decrypted or parsed"), e.g. when its pool
-                    # routes the follow-up elsewhere. Drop every reasoning
-                    # item and retry: with store=false the request stays
+                    # routes the follow-up elsewhere -- and some keep failing
+                    # even once no item is echoed, because the include flag
+                    # itself trips the same verifier. Drop the items AND the
+                    # include, then retry: with store=false the request stays
                     # valid, the model just re-reasons per turn.
-                    patched = _drop_reasoning(body)
+                    patched = _without_encrypted_reasoning(body)
                     if patched != body:
                         body = patched
                         continue
@@ -192,14 +194,27 @@ def _drop_bare_reasoning(body: dict[str, Any]) -> dict[str, Any]:
 
 
 def _drop_reasoning(body: dict[str, Any]) -> dict[str, Any]:
-    """Rebuild input without any reasoning items at all.
+    """Rebuild input without any reasoning items at all."""
+    kept = [item for item in body.get("input", []) if item.get("type") != "reasoning"]
+    return {**body, "input": kept}
+
+
+def _without_encrypted_reasoning(body: dict[str, Any]) -> dict[str, Any]:
+    """Rebuild a request without reasoning items or the encrypted-content include.
 
     The repair for a proxy that issued encrypted reasoning content but fails
     to verify it echoed back: without the items the request stays valid under
     ``store=false`` and the model re-reasons from scratch on the next turn.
+    The include flag goes too, for proxies whose verifier trips on the flag
+    itself once its pool loses the decryption state.
     """
-    kept = [item for item in body.get("input", []) if item.get("type") != "reasoning"]
-    return {**body, "input": kept}
+    patched = _drop_reasoning(body)
+    include = [
+        entry for entry in patched.get("include", []) if entry != "reasoning.encrypted_content"
+    ]
+    if include != patched.get("include"):
+        patched = {**patched, "include": include}
+    return patched
 
 
 def _add_summaries(body: dict[str, Any]) -> dict[str, Any]:

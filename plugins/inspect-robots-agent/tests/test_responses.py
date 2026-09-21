@@ -692,16 +692,30 @@ def test_encrypted_content_rejection_drops_reasoning_items_and_retries() -> None
     """A 400 that cannot verify echoed encrypted reasoning drops those items.
 
     The proxy issued the encrypted reasoning item itself, then fails to
-    verify it on the way back (its pool routed the follow-up elsewhere);
-    dropping every reasoning item keeps the store=false request valid.
+    verify it on the way back (its pool routed the follow-up elsewhere), and
+    keeps failing on the include flag alone; the repair drops the items and
+    the flag, keeping the store=false request valid.
     """
-    inputs: list[list[dict[str, Any]]] = []
+    requests: list[dict[str, Any]] = []
     served_first = False
+
+    def reject(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            400,
+            json={
+                "error": {
+                    "message": (
+                        "The encrypted content for item rs_1 could not be verified. "
+                        "Reason: Encrypted content could not be decrypted or parsed."
+                    )
+                }
+            },
+        )
 
     def handler(request: httpx.Request) -> httpx.Response:
         nonlocal served_first
         body = json.loads(request.content)
-        inputs.append(list(body["input"]))
+        requests.append(body)
         if not served_first:
             served_first = True
             return httpx.Response(
@@ -717,17 +731,11 @@ def test_encrypted_content_rejection_drops_reasoning_items_and_retries() -> None
                 ),
             )
         if any(item.get("type") == "reasoning" for item in body["input"]):
-            return httpx.Response(
-                400,
-                json={
-                    "error": {
-                        "message": (
-                            "The encrypted content for item rs_1 could not be verified. "
-                            "Reason: Encrypted content could not be decrypted or parsed."
-                        )
-                    }
-                },
-            )
+            return reject(request)
+        if "reasoning.encrypted_content" in body.get("include", []):
+            # The verifier also trips on the include flag itself once its
+            # pool lost the decryption state: keep failing the same way.
+            return reject(request)
         return httpx.Response(200, json=_response(_message("done")))
 
     client = _client(handler, backoff_s=0.0)
@@ -760,9 +768,13 @@ def test_encrypted_content_rejection_drops_reasoning_items_and_retries() -> None
     )
 
     assert second.content == "done"
-    assert not any(item.get("type") == "reasoning" for item in inputs[-1])
+    final = requests[-1]
+    assert not any(item.get("type") == "reasoning" for item in final["input"])
+    # The include flag went with the items: the retry stopped asking for
+    # encrypted reasoning content at all.
+    assert "reasoning.encrypted_content" not in final.get("include", [])
     # The paired function_call and its output survive the repair.
-    kinds = [item.get("type") for item in inputs[-1]]
+    kinds = [item.get("type") for item in final["input"]]
     assert "function_call" in kinds and "function_call_output" in kinds
 
 
