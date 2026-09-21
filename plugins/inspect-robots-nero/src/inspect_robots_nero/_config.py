@@ -113,9 +113,11 @@ The state field joint_pos is [left j1..j7, right j1..j7, left width, right width
 Base frame: shelf base at the left arm's root; +x forward, +z up.
 Collision geometry: the gripper assembly extends 0.03 m BELOW the TCP that
 the xyz targets describe; the hand's lowest point is 3 cm under the commanded
-pose. A horizontal move that passes this lowest point through an obstacle
-(basket or box rims, table edge) snags the arm. Reaching into or over a
-container: first raise the arm until the point 0.03 m below the TCP clears
-the highest rim by at least 0.02 m, translate horizontally only until
-centered over the opening, then descend vertically. Never translate
-horizontally at a height where the gripper body would cross a rim."""
+pose, and the rear of the assembly protrudes as well. A horizontal move that
+passes this lowest point through an obstacle (basket or box rims, table edge)
+snags the arm. Motion pattern near any container: move in axis-separated
+segments only: raise z FIRST, then translate in xy at constant z, then lower
+z LAST once centered over the opening. Never combine forward xy motion with
+descending z, and never translate horizontally at a height where the point
+0.03 m below the TCP would cross a rim; before any xy translation near a
+container, target z at least 0.05 m above the highest rim you can see."""
