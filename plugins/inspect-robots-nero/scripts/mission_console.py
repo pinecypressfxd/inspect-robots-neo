@@ -1583,8 +1583,8 @@ _PAGE_HEAD = """<!doctype html>
   .tool-line.tool-delegate_skill .tool-name { background: #7a55b5; color: #fff; }
   .tool-line.tool-done .tool-name,
   .tool-line.tool-give_up .tool-name { background: #a12a2a; color: #fff; }
-  .tool-args { color: var(--fg, #333); font-family: ui-monospace, monospace; font-size: 12px; }
-  .tool-note { color: #68707d; }
+  .tool-args { color: #d6dee8; font-family: ui-monospace, monospace; font-size: 12px; }
+  .tool-note { color: #9aa7b4; }
   #home:disabled { opacity: 0.5; }
   #instruction { flex: 1; min-width: 260px; padding: 8px; background: #171d24; color: inherit;
                  border: 1px solid #2a3340; border-radius: 4px; }
