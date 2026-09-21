@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextlib
 import importlib.resources
 import math
+import sys
 import time
 from collections.abc import Callable, Mapping, Sequence
 from typing import Any, cast
@@ -241,6 +242,9 @@ class NeroEmbodiment(EmbodimentBase):
         self._grippers: dict[str, Any] = {}
         self._cameras: dict[str, Any] = {}
         self._kinematics: Any | None = None
+        # Warns once per streak of held steps (an unreachable target's chunk
+        # can hold for many steps); re-arms on the next solved step.
+        self._ik_hold_warned = False
         self._last_commanded: dict[str, np.ndarray] = {}
         self._last_step_time: float | None = None
         self._max_joint_step = 0.1
@@ -440,7 +444,21 @@ class NeroEmbodiment(EmbodimentBase):
         try:
             q_solution = self._kinematics.solve(left_target, right_target, q_seed)
         except NeroKinematicsError as exc:
-            raise EmbodimentFault(f"nero IK failed: {exc}") from exc
+            # An unreachable commanded pose is a planning miss caught before
+            # anything is commanded: no motion, no danger. Hold the joints and
+            # keep the rollout alive instead of halting the eval -- the next
+            # observation shows the arm did not move, and the planner (whose
+            # docs say so) repositions or changes approach. Halting here would
+            # kill a whole trial over one over-ambitious target.
+            if not self._ik_hold_warned:
+                print(
+                    "warning: nero IK cannot reach the commanded pose; holding "
+                    f"position until a reachable target arrives ({exc})",
+                    file=sys.stderr,
+                )
+                self._ik_hold_warned = True
+            return StepResult(observation=self._assemble_observation())
+        self._ik_hold_warned = False
         left_current, right_current = joints[:7], joints[7:14]
         left_command = left_current + np.clip(
             q_solution[:7] - left_current, -self._max_joint_step, self._max_joint_step

@@ -168,6 +168,37 @@ def test_step_commands_bounded_joint_deltas_and_gripper_widths() -> None:
     assert result.observation.images["left_rgbd"].shape == (480, 640, 3)
 
 
+def test_unreachable_target_holds_and_keeps_the_rollout_alive(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """An IK-impossible pose holds the arms instead of faulting the eval.
+
+    The planner commands over-ambitious targets as a matter of course; the
+    failure is caught before anything is commanded, so the step holds the
+    joints, warns once per streak, and the next reachable action executes
+    normally -- the planner sees the unmoved state in between and replans.
+    """
+    harness = Harness()
+    harness.embodiment.reset(Scene(id="s0", instruction="x"))
+    before = {side: list(robot.move_js_calls) for side, robot in harness.robots.items()}
+
+    unreachable = _home_action(0.09, 0.09)
+    unreachable[0] += 5.0  # 5 m out of the workspace: no seed can converge
+    result = harness.embodiment.step(Action(data=unreachable))
+    unreachable_again = _home_action(0.09, 0.09)
+    unreachable_again[0] += 5.0
+    harness.embodiment.step(Action(data=unreachable_again))
+
+    assert result.observation.state["eef_state"].shape == (20,)
+    for side, robot in harness.robots.items():
+        assert robot.move_js_calls == before[side]  # nothing commanded: held
+    assert capsys.readouterr().err.count("holding position") == 1  # once per streak
+
+    harness.embodiment.step(Action(data=_home_action(0.05, 0.05)))
+    for robot in harness.robots.values():
+        assert len(robot.move_js_calls) == len(before["left"]) + 1  # recovered
+
+
 def test_step_paces_itself_to_control_hz() -> None:
     harness = Harness()
     harness.embodiment.reset(Scene(id="s0", instruction="x"))
@@ -185,15 +216,6 @@ def test_action_shape_mismatch_is_rejected() -> None:
     harness.embodiment.reset(Scene(id="s0", instruction="x"))
     with pytest.raises(ValueError, match="shape"):
         harness.embodiment.step(Action(data=np.zeros(6)))
-
-
-def test_unreachable_action_raises_embodiment_fault() -> None:
-    harness = Harness()
-    harness.embodiment.reset(Scene(id="s0", instruction="x"))
-    far = _home_action(GRIPPER_INIT_WIDTH_M, GRIPPER_INIT_WIDTH_M)
-    far[0] = 50.0  # five meters past any reachable pose
-    with pytest.raises(EmbodimentFault):
-        harness.embodiment.step(Action(data=far))
 
 
 def test_gripper_force_is_the_configured_constant() -> None:

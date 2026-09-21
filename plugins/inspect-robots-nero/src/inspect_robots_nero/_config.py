@@ -120,4 +120,8 @@ segments only: raise z FIRST, then translate in xy at constant z, then lower
 z LAST once centered over the opening. Never combine forward xy motion with
 descending z, and never translate horizontally at a height where the point
 0.03 m below the TCP would cross a rim; before any xy translation near a
-container, target z at least 0.05 m above the highest rim you can see."""
+container, target z at least 0.05 m above the highest rim you can see.
+Reachability feedback: a straight-down gripper orientation is reachable only
+over part of the workspace. When a motion does not change the state at all,
+the commanded pose was unreachable and the arms held; reposition closer or
+change the approach orientation instead of repeating the same target."""
