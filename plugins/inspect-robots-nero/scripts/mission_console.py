@@ -2014,12 +2014,17 @@ def build_command(namespace: argparse.Namespace) -> tuple[list[str], list[str]]:
             f"api_key_env={namespace.api_key_env}",
         ]
     else:
+        # Same gateway constraint the hybrid branch carries: kspmas rejects
+        # function tools + reasoning_effort on /chat/completions, so agent
+        # runs also speak /v1/responses.
         suffix = [
             *common,
             "--policy",
             "agent",
             "-P",
             f"model={namespace.model}",
+            "-P",
+            "wire=responses",
             "-P",
             f"base_url={namespace.base_url}",
             "-P",
