@@ -121,6 +121,11 @@ z LAST once centered over the opening. Never combine forward xy motion with
 descending z, and never translate horizontally at a height where the point
 0.03 m below the TCP would cross a rim; before any xy translation near a
 container, target z at least 0.05 m above the highest rim you can see.
+Calibrated working band (operator-measured): the standard start height
+already sits about 0.05 m above the box rim, and the 3 cm protrusion clears
+there -- do NOT lift far above the box before reaching over it, and descend
+at most 0.05 m below that start height (the lowest safe TCP is at rim
+height); work inside this band instead of climbing high above it.
 Reachability feedback: a straight-down gripper orientation is reachable only
 over part of the workspace. When a motion does not change the state at all,
 the commanded pose was unreachable and the arms held; reposition closer or
