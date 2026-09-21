@@ -126,6 +126,9 @@ already sits about 0.05 m above the box rim, and the 3 cm protrusion clears
 there -- do NOT lift far above the box before reaching over it, and descend
 at most 0.05 m below that start height (the lowest safe TCP is at rim
 height); work inside this band instead of climbing high above it.
+Carrying: after closing on an object, rise only about 0.05 m above the
+highest obstacle on the way to the target, then translate directly (a
+diagonal path is fine) -- do not climb to a high transport altitude first.
 Reachability feedback: a straight-down gripper orientation is reachable only
 over part of the workspace. When a motion does not change the state at all,
 the commanded pose was unreachable and the arms held; reposition closer or
