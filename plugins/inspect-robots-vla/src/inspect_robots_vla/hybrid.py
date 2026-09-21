@@ -2,7 +2,7 @@
 
 Helix-style layering (plan 0084): the planner (Astra through the agent
 plugin's chat wire) decomposes the goal and hands each short skill to the
-``umi-replay`` VLA execution loop; at every checkpoint, tracking abort, or
+``vla`` VLA execution loop; at every checkpoint, tracking abort, or
 time cap it sees the latest observation plus a compact progress note and
 decides again. The VLA is the hands, the LLM is the brain, and ``done`` /
 ``give_up`` stay with the LLM. As with the pure adapter, this module adds no

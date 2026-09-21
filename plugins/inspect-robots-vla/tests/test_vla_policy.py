@@ -1,4 +1,4 @@
-"""VlaPolicy tests: the pure ``umi-replay`` adapter over an injected fake client.
+"""VlaPolicy tests: the pure ``vla`` adapter over an injected fake client.
 
 The fake speaks only the seam the policy uses (``infer``/``close``), so these
 tests pin the adapter's contract: task/state/image submission, anchored
@@ -28,7 +28,7 @@ from inspect_robots import (
     StateSpec,
 )
 from inspect_robots.errors import ConfigError, PolicyError
-from inspect_robots_vla import VlaPolicy, umi_replay
+from inspect_robots_vla import VlaPolicy, vla_policy
 from inspect_robots_vla._anchor import anchor_chunk
 from inspect_robots_vla._client import VlaChunk, VlaServiceError
 from inspect_robots_vla._config import (
@@ -145,10 +145,10 @@ def _observation(
 
 
 def test_info_declares_chunked_eef_output() -> None:
-    policy = umi_replay(prompt="t", client=_FakeClient([]), control_hz=24.0)
+    policy = vla_policy(prompt="t", client=_FakeClient([]), control_hz=24.0)
 
     assert isinstance(policy, Policy)
-    assert policy.info.name == "umi-replay"
+    assert policy.info.name == "vla"
     assert policy.info.control_hz == 24.0
     assert policy.info.action_space.shape == (20,)
     semantics = policy.info.action_space.semantics
@@ -166,7 +166,7 @@ def test_info_declares_chunked_eef_output() -> None:
 
 def test_act_submits_prompt_state_images_and_anchors_the_chunk() -> None:
     fake = _FakeClient([_chunk(_scripted_deltas()), _zero_chunk()])
-    policy = umi_replay(prompt="pick up the cup", client=fake)
+    policy = vla_policy(prompt="pick up the cup", client=fake)
     state = _eef_state()
 
     chunk = policy.act(_observation())
@@ -216,7 +216,7 @@ def test_act_submits_prompt_state_images_and_anchors_the_chunk() -> None:
 
 def test_submit_images_string_form_preserves_declared_slot_order() -> None:
     fake = _FakeClient([_zero_chunk()])
-    policy = umi_replay(prompt="t", submit_images="right_rgbd,left_rgbd", client=fake)
+    policy = vla_policy(prompt="t", submit_images="right_rgbd,left_rgbd", client=fake)
 
     policy.act(_observation())
 
@@ -229,7 +229,7 @@ def test_submit_images_string_form_preserves_declared_slot_order() -> None:
 
 def test_task_string_prefers_the_configured_prompt() -> None:
     fake = _FakeClient([_zero_chunk()])
-    policy = umi_replay(prompt="trained prompt", client=fake)
+    policy = vla_policy(prompt="trained prompt", client=fake)
     policy.reset(Scene(id="s", instruction="scene says"))
 
     policy.act(_observation(instruction="live says"))
@@ -259,7 +259,7 @@ def test_no_task_string_raises_policy_error() -> None:
 
 def test_state_fallback_uses_the_last_commanded_target() -> None:
     fake = _FakeClient([_chunk(_scripted_deltas()), _zero_chunk()])
-    policy = umi_replay(prompt="pour", client=fake)
+    policy = vla_policy(prompt="pour", client=fake)
 
     policy.act(_observation())
     expected_last = anchor_chunk(_eef_state(), _chunk(_scripted_deltas()))[-1]
@@ -277,7 +277,7 @@ def test_state_fallback_uses_the_last_commanded_target() -> None:
 
 def test_first_call_without_state_key_raises_policy_error() -> None:
     fake = _FakeClient([])
-    policy = umi_replay(prompt="t", client=fake)
+    policy = vla_policy(prompt="t", client=fake)
 
     with pytest.raises(PolicyError, match="eef_state"):
         policy.act(_observation(with_state=False))
@@ -300,7 +300,7 @@ def test_reset_clears_the_fallback_anchor_and_scene_instruction() -> None:
 def test_missing_submit_camera_raises_policy_error() -> None:
     frames = {name: frame for name, frame in _DEFAULT_FRAMES.items() if name != "chest_rgbd"}
     fake = _FakeClient([])
-    policy = umi_replay(prompt="t", client=fake)
+    policy = vla_policy(prompt="t", client=fake)
 
     with pytest.raises(PolicyError, match="chest_rgbd"):
         policy.act(_observation(frames=frames))
@@ -309,7 +309,7 @@ def test_missing_submit_camera_raises_policy_error() -> None:
 
 def test_transient_error_is_retried_once_then_policy_error() -> None:
     fake = _FakeClient([_service_error(), _service_error()])
-    policy = umi_replay(prompt="t", client=fake)
+    policy = vla_policy(prompt="t", client=fake)
 
     with pytest.raises(PolicyError, match="dropped the /submit connection"):
         policy.act(_observation())
@@ -323,7 +323,7 @@ def test_successful_retry_returns_the_chunk_and_rearms_the_retry() -> None:
     fake = _FakeClient(
         [_service_error(), _zero_chunk(), _service_error(), _zero_chunk(request_id=2)]
     )
-    policy = umi_replay(prompt="t", client=fake)
+    policy = vla_policy(prompt="t", client=fake)
 
     policy.act(_observation())
     policy.act(_observation())
@@ -333,7 +333,7 @@ def test_successful_retry_returns_the_chunk_and_rearms_the_retry() -> None:
 
 def test_second_consecutive_failure_raises_without_retrying() -> None:
     fake = _FakeClient([_service_error(), _service_error(), _service_error()])
-    policy = umi_replay(prompt="t", client=fake)
+    policy = vla_policy(prompt="t", client=fake)
 
     with pytest.raises(PolicyError):
         policy.act(_observation())
@@ -348,7 +348,7 @@ def test_anchor_failure_raises_policy_error_and_keeps_the_retry_armed() -> None:
     bad = _chunk(np.zeros((2, ACTION_DIM_VLA)))
     bad.deltas[0, 0] = np.nan
     fake = _FakeClient([bad, _service_error(), _zero_chunk()])
-    policy = umi_replay(prompt="t", client=fake)
+    policy = vla_policy(prompt="t", client=fake)
 
     with pytest.raises(PolicyError, match="non-finite"):
         policy.act(_observation())
@@ -375,7 +375,7 @@ def test_bind_records_the_state_field_and_dim_labels() -> None:
             state=StateSpec(fields=(StateField("eef_state", (20,)), StateField("joint_pos", (16,))))
         ),
     )
-    policy = umi_replay(prompt="t", client=_FakeClient([]))
+    policy = vla_policy(prompt="t", client=_FakeClient([]))
 
     policy.bind(info)
     assert policy.state_field is not None
@@ -412,7 +412,7 @@ def test_construction_rejects_bad_kwargs(kwargs: dict[str, Any], match: str) -> 
 
 def test_close_closes_only_the_owned_client() -> None:
     fake = _FakeClient([])
-    policy = umi_replay(prompt="t", client=fake)
+    policy = vla_policy(prompt="t", client=fake)
     policy.close()
     assert not fake.closed  # an injected client stays the caller's
 

@@ -1982,7 +1982,7 @@ def build_command(namespace: argparse.Namespace) -> tuple[list[str], list[str]]:
         "-E",
         "operator_reset_confirm=False",
     ]
-    if namespace.policy in ("vla", "umi-replay"):
+    if namespace.policy in ("vla", "umi-replay"):  # selector value or the pre-rename alias
         # Pure VLA baseline: the same instruction is the trained prompt. The
         # embodiment also paces at the checkpoint's trained action_freq
         # (10 Hz): at the nero default 30 Hz the 20-step chunk plays in 0.7 s
@@ -1991,7 +1991,7 @@ def build_command(namespace: argparse.Namespace) -> tuple[list[str], list[str]]:
         suffix = [
             *common,
             "--policy",
-            "umi-replay",
+            "vla",
             "-P",
             "prompt=__INSTRUCTION__",
             "-P",

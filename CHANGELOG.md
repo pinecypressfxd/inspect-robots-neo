@@ -9,6 +9,12 @@ All notable changes to this project are documented here. The format is based on
 
 ### Changed
 
+- **vla plugin:** the pure VLA policy is registered as `vla`
+  (`--policy vla`); `umi-replay` remains a registered alias for the
+  pre-rename name. The policy's default `control_hz` is now the checkpoint's
+  trained `action_freq` (10 Hz, was 30): pure-VLA runs no longer declare a
+  rate the embodiment cannot honor without `-E control_hz=10`.
+
 - **Core:** `inspect-robots view LOG_DIR` now renders a task library: a task
   index with search and policy filters, per-task pages with rollout tabs, and
   playback-synced decision cards (rationale plus per-arm command deltas from

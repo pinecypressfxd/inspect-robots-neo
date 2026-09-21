@@ -1,4 +1,4 @@
-"""VlaPolicy: the pure ``umi-replay`` VLA adapter over the :10055 wire.
+"""VlaPolicy: the pure ``vla`` VLA adapter over the :10055 wire.
 
 One ``act()`` is one client round trip: the observation's camera frames (per
 ``submit_images``, sorted into the wire's image order), the 20-dim EE state,
@@ -43,10 +43,10 @@ from ._anchor import (
 from ._client import VlaChunk, VlaClient, VlaServiceError
 from ._config import (
     CHUNK_STEPS,
-    CONTROL_HZ,
     STATE_KEY,
     SUBMIT_IMAGES,
     VLA_BASE_URL,
+    VLA_CONTROL_HZ,
     VLA_POLL_INTERVAL_S,
     VLA_POLL_TIMEOUT_S,
     VLA_SUBMIT_TIMEOUT_S,
@@ -88,7 +88,7 @@ class VlaPolicyConfig(PolicyConfig):
     prompt: str | None = None
     submit_images: tuple[str, ...] = SUBMIT_IMAGES
     state_key: str = STATE_KEY
-    control_hz: float = CONTROL_HZ
+    control_hz: float = VLA_CONTROL_HZ
     timeout_s: float = VLA_SUBMIT_TIMEOUT_S
     poll_interval_s: float = VLA_POLL_INTERVAL_S
     poll_timeout_s: float = VLA_POLL_TIMEOUT_S
@@ -123,7 +123,7 @@ def _parse_submit_images(value: Sequence[str] | str) -> tuple[str, ...]:
 
 
 class VlaPolicy(PolicyBase):
-    """The pure ``umi-replay`` policy: observation in, anchored chunk out.
+    """The pure ``vla`` policy: observation in, anchored chunk out.
 
     The task string sent to the service is the configured ``prompt`` (the
     trained task string, sent verbatim), falling back to the observation's
@@ -143,7 +143,7 @@ class VlaPolicy(PolicyBase):
         prompt: str | None = None,
         submit_images: Sequence[str] | str = SUBMIT_IMAGES,
         state_key: str = STATE_KEY,
-        control_hz: float = CONTROL_HZ,
+        control_hz: float = VLA_CONTROL_HZ,
         timeout_s: float = VLA_SUBMIT_TIMEOUT_S,
         poll_interval_s: float = VLA_POLL_INTERVAL_S,
         poll_timeout_s: float = VLA_POLL_TIMEOUT_S,
@@ -192,7 +192,7 @@ class VlaPolicy(PolicyBase):
             self._client = client
         self._owned_client = owned
         self.info = PolicyInfo(
-            name="umi-replay",
+            name="vla",
             action_space=Box(
                 shape=(EEF_STATE_DIM,),
                 semantics=ActionSemantics(
@@ -299,9 +299,7 @@ class VlaPolicy(PolicyBase):
                 if attempts == 2
                 else "failed; the previous attempt also failed, so no retry"
             )
-            raise PolicyError(
-                f"umi-replay VLA request {request_id} {outcome}: {failure}"
-            ) from failure
+            raise PolicyError(f"vla VLA request {request_id} {outcome}: {failure}") from failure
         self._previous_attempt_failed = False
         try:
             targets = anchor_chunk(eef_state, chunk)
@@ -309,8 +307,7 @@ class VlaPolicy(PolicyBase):
             # A malformed chunk is bad data, not a dead service: the next
             # act() keeps its retry.
             raise PolicyError(
-                f"umi-replay VLA request {request_id} returned a chunk that cannot "
-                f"be anchored: {exc}"
+                f"vla VLA request {request_id} returned a chunk that cannot be anchored: {exc}"
             ) from exc
         self._last_target = targets[-1]
         self._prev_umi_state = eef_state_to_umi_rpy_state(eef_state)
@@ -333,7 +330,7 @@ class VlaPolicy(PolicyBase):
             if candidate:
                 return candidate
         raise PolicyError(
-            "umi-replay has no task string to submit: pass -P prompt=... or run "
+            "vla has no task string to submit: pass -P prompt=... or run "
             "scenes that carry instructions"
         )
 

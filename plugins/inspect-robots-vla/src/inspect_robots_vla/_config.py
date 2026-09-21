@@ -44,6 +44,13 @@ ACTION_FORMAT = "xyz_rpy"
 
 # VlaPolicy defaults (plan 0084): the nero camera triple, the 20-dim EE state
 # key those cameras' checkpoint was trained against, and its control rate.
+#: The pure VLA policy's declared rate: the checkpoint's own action_freq
+#: (stage2_rlt_pi05_dualarm.json "action_freq": 10.0). The embodiment still
+#: paces the rollout, so pure-vla runs also want -E control_hz=10; the
+#: mismatch warning on a 30 Hz embodiment is the reminder.
+VLA_CONTROL_HZ = 10.0
+#: The hybrid's declared rate: its analytic move_to segments are tuned at the
+#: embodiment's default pace, and its delegated VLA chunks inherit it.
 CONTROL_HZ = 30.0
 SUBMIT_IMAGES = ("left_rgbd", "right_rgbd", "chest_rgbd")
 STATE_KEY = "eef_state"

@@ -4,7 +4,8 @@ VLA policies for [Inspect Robots](https://github.com/robocurve/inspect-robots)
 speaking the live `serve_rlt_inference` HTTP wire (NPZ submit/poll on
 `127.0.0.1:10055`):
 
-- `umi-replay`: the pure VLA policy. One `act()` is one wire round trip: the
+- `vla` (alias `umi-replay`, the pre-rename entry point): the pure VLA policy.
+  One `act()` is one wire round trip: the
   submit-camera frames (HWC uint8, encoded CHW in sorted key order), the 20-dim
   EE state, and the task string go to `POST /submit`; the returned delta-EE
   chunk (20 steps x 14 dims on the live checkpoint) is re-anchored onto the
@@ -13,7 +14,7 @@ speaking the live `serve_rlt_inference` HTTP wire (NPZ submit/poll on
 - `hybrid`: a Helix-style planner/executor split. A frontier LLM (through the
   [agent plugin](../inspect-robots-agent/)'s chat wire) decomposes the goal with
   the `delegate_skill`, `done`, and `give_up` tools; each delegated subgoal runs
-  as a `umi-replay` segment whose VLA task string is the subgoal itself, and the
+  as a `vla` segment whose VLA task string is the subgoal itself, and the
   planner regains control at every checkpoint, tracking abort, or time cap.
 
 ## Before the first hardware run (operator, blocking)
@@ -48,8 +49,7 @@ overridable (see [Tunables](#tunables)).
 Baseline, the trained task string sent verbatim to the VLA:
 
     inspect-robots "put the cup on the pad with left arm" \
-      --policy umi-replay -P prompt="put the cup on the pad" \
-      --embodiment nero
+      --policy vla --embodiment nero -E control_hz=10
 
 Hybrid, Astra planning through the experientiallabs proxy while the VLA
 executes each delegated skill:
@@ -96,7 +96,7 @@ argument, overridable per run with `-P key=value`.
 | `-P` flag | Default | Policies | Meaning |
 |---|---|---|---|
 | `base_url` (`vla_base_url` for hybrid) | `http://127.0.0.1:10055` | both | inference service base URL |
-| `prompt` | scene instruction | both | task string; umi-replay sends it verbatim, hybrid uses it as the planner goal |
+| `prompt` | scene instruction | both | task string; vla sends it verbatim, hybrid uses it as the planner goal |
 | `submit_images` | `left_rgbd,right_rgbd,chest_rgbd` | both | cameras whose frames go into the submit NPZ (2..3, sorted key order on the wire) |
 | `state_key` | `eef_state` | both | observation state key used as the 20-dim EE anchor |
 | `control_hz` | `30` | both | declared control rate |

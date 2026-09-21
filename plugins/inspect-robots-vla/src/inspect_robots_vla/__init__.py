@@ -1,4 +1,4 @@
-"""VLA policies for Inspect Robots: pure ``umi-replay`` and the Astra hybrid.
+"""VLA policies for Inspect Robots: pure ``vla`` and the Astra hybrid.
 
 The pure adapter lives in
 [`policy`][inspect_robots_vla.policy] and the planner-executor hybrid in
@@ -17,17 +17,22 @@ from typing import Any
 
 from inspect_robots_vla.policy import VlaPolicy
 
-__all__ = ["VlaPolicy", "umi_replay"]
+__all__ = ["VlaPolicy", "umi_replay", "vla_policy"]
 
 
-def umi_replay(**kwargs: Any) -> VlaPolicy:
-    """Registry factory for the ``umi-replay`` policy (entry point ``umi-replay``).
+def vla_policy(**kwargs: Any) -> VlaPolicy:
+    """Registry factory for the ``vla`` policy (entry point ``vla``).
 
     Accepts the same keyword arguments as
     [`VlaPolicy`][inspect_robots_vla.policy.VlaPolicy]; the CLI forwards each
     ``-P key=value`` pair here.
     """
     return VlaPolicy(**kwargs)
+
+
+#: Compat alias for the pre-rename entry point; kept so old commands and
+#: scripts using ``--policy umi-replay`` keep resolving.
+umi_replay = vla_policy
 
 
 def __getattr__(name: str) -> Any:
