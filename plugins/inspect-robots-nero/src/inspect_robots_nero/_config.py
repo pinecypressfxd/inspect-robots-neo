@@ -110,4 +110,12 @@ rot6d is the first two columns of the target rotation matrix (6 numbers, each in
 Gripper width 0 means closed, 0.09 means open.
 The state field eef_state mirrors the action layout from current forward kinematics.
 The state field joint_pos is [left j1..j7, right j1..j7, left width, right width] (16 dims).
-Base frame: shelf base at the left arm's root; +x forward, +z up."""
+Base frame: shelf base at the left arm's root; +x forward, +z up.
+Collision geometry: the gripper assembly extends 0.03 m BELOW the TCP that
+the xyz targets describe; the hand's lowest point is 3 cm under the commanded
+pose. A horizontal move that passes this lowest point through an obstacle
+(basket or box rims, table edge) snags the arm. Reaching into or over a
+container: first raise the arm until the point 0.03 m below the TCP clears
+the highest rim by at least 0.02 m, translate horizontally only until
+centered over the opening, then descend vertically. Never translate
+horizontally at a height where the gripper body would cross a rim."""
