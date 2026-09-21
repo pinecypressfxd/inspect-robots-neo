@@ -1,7 +1,9 @@
 """Operator CLI for the Nero arms: home after power-on, or drop limp fast.
 
-``home`` ports the bring-up checkout's ``test_move_j.py --stage move_j``:
-enable, firmware normal mode, ``move_j`` to the config home poses, wait.
+``home`` enables the arms, opens both grippers, and streams bounded
+``move_js`` increments to the config home poses in follower mode (firmware
+>= 1.12 has no position mode; ``move_j`` trajectories misexecute in the
+default follower mode), then waits for the settle.
 ``disable`` ports ``disable_arms.py``: without ``--yes`` it only warns and
 exits 2; with it, it disables and polls the per-joint enable flags until
 every joint reports limp or ``--timeout`` expires (exit 1 on timeout).
@@ -25,10 +27,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Nero arm operator tools")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    home = subparsers.add_parser("home", help="enable arms and move_j them to home")
+    home = subparsers.add_parser(
+        "home", help="enable arms, open grippers, and stream joints to home"
+    )
     home.add_argument("--arm", choices=ARM_CHOICES, default="both")
     home.add_argument(
-        "--wait", type=float, default=2.0, help="seconds to hold after the move_j (default 2.0)"
+        "--wait",
+        type=float,
+        default=2.0,
+        help="seconds to hold after settling at home (default 2.0)",
     )
 
     disable = subparsers.add_parser("disable", help="disable arms until all joints report limp")

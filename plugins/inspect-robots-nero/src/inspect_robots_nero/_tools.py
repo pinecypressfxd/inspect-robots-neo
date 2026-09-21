@@ -1,10 +1,11 @@
 """Operator bring-up tools: home the arms or drop them limp on demand.
 
-Ports the bring-up checkout's ``test_move_j.py --stage move_j`` and
-``disable_arms.py`` flows onto this plugin's wrapper: enable with a hard
-failure check, firmware normal mode, ``move_j`` to the config home poses,
-and a disable loop that polls per-joint enable flags until every joint
-reports limp or a timeout expires.
+Homing streams follower-mode ``move_js`` increments, the pairing the
+embodiment's reset uses and the only one this firmware honors: on Nero
+firmware >= 1.12 there is no position mode (``set_normal_mode()`` is a
+no-op the vendor warns about), so a ``move_j`` trajectory executes wrongly
+in the default follower mode. The disable path polls per-joint enable
+flags until every joint reports limp or a timeout expires.
 """
 
 from __future__ import annotations
@@ -13,13 +14,19 @@ import contextlib
 import time
 from collections.abc import Callable, Mapping, Sequence
 
+import numpy as np
+
 from inspect_robots_nero._arm import NeroArm, clamp_to_joint_envelope
 from inspect_robots_nero._config import (
     CAN_CHANNELS,
+    CONTROL_HZ,
     GRIPPER_FORCE,
     GRIPPER_INIT_WIDTH_M,
     HOME_LEFT,
     HOME_RIGHT,
+    RESET_SETTLE_TIMEOUT_S,
+    RESET_SETTLE_TOL_RAD,
+    SPEED_PERCENT,
 )
 from inspect_robots_nero._gripper import NeroGripper
 
@@ -56,17 +63,25 @@ def home_arms(
     *,
     wait_s: float,
     sleep: Sleeper = time.sleep,
+    clock: Clock = time.monotonic,
     enable_retries: int = 3,
     retry_pause_s: float = 0.5,
+    control_hz: float = CONTROL_HZ,
+    max_joint_step_rad: float = 0.1,
+    settle_tol_rad: float = RESET_SETTLE_TOL_RAD,
+    settle_timeout_s: float = RESET_SETTLE_TIMEOUT_S,
 ) -> None:
-    """Enable every arm, move_j it to home, and open both grippers fully.
+    """Enable every arm, open both grippers, then stream follower joints to home.
 
     ``enable()`` returns falsy both for a refused enable and for an arm that
     is already enabled (firmware semantics), so a falsy return retries a few
     times and then accepts the state when the per-joint flags say enabled.
-    The grippers open to ``GRIPPER_INIT_WIDTH_M`` so home lands in a known
-    clean state; without this they keep the previous run's width (a partially
-    closed left gripper after a grasp).
+    The grippers open to ``GRIPPER_INIT_WIDTH_M`` before any joint motion so
+    home lands in a known clean state without interleaving the effector's
+    CAN traffic with the joint stream. Both arms then step toward the config
+    home poses in bounded ``move_js`` increments (follower mode has no
+    firmware smoothing, so a direct jump would command a violent velocity)
+    until settled, mirroring the embodiment's reset drive.
     """
     for arm in arms.values():
         # A latched e-stop (from damped_disable) makes the firmware ignore
@@ -84,15 +99,40 @@ def home_arms(
             if arm.enable():
                 break
         else:
-            raise RuntimeError(f"failed to enable the {arm.side} arm before move_j")
+            raise RuntimeError(f"failed to enable the {arm.side} arm before homing")
     for arm in arms.values():
-        arm.set_position_mode()
-    for side, arm in arms.items():
-        arm.move_j(clamp_to_joint_envelope(list(HOMES[side])).tolist())
-    # Issued while the arms travel so the gripper settle overlaps the move;
-    # home is a clean state, so anything held at home time is released here.
+        arm.set_speed_percent(SPEED_PERCENT)
+        # The wrapper prefers follower mode: the only mode this firmware
+        # honors (>= 1.12 has no position mode).
+        arm.set_normal_mode()
     for arm in arms.values():
         NeroGripper(arm, sleep=sleep).move(GRIPPER_INIT_WIDTH_M, GRIPPER_FORCE)
+    targets = {side: clamp_to_joint_envelope(list(HOMES[side])) for side in arms}
+    deadline = clock() + settle_timeout_s
+    while True:
+        currents: dict[str, np.ndarray] = {}
+        settled = True
+        for side, arm in arms.items():
+            reading = arm.read_state()
+            if reading is None or len(reading) != 7:
+                raise RuntimeError(f"no joint feedback from the {arm.side} arm while homing")
+            current = np.asarray(reading, dtype=np.float64)
+            currents[side] = current
+            if float(np.max(np.abs(current - targets[side]))) > settle_tol_rad:
+                settled = False
+        if settled:
+            for side, arm in arms.items():
+                arm.move_js(targets[side].tolist())
+            break
+        if clock() >= deadline:
+            raise RuntimeError(
+                f"arms did not settle at home within {settle_timeout_s:g}s; "
+                "check the joint feedback and for physical obstruction"
+            )
+        for side, arm in arms.items():
+            step = np.clip(targets[side] - currents[side], -max_joint_step_rad, max_joint_step_rad)
+            arm.move_js((currents[side] + step).tolist())
+        sleep(1.0 / control_hz)
     sleep(wait_s)
 
 
@@ -109,8 +149,6 @@ def disable_arms(
     Arms without enable feedback (``enable_status() is None``) stay pending
     and can only leave the loop through the timeout.
     """
-    for arm in arms.values():
-        arm.set_position_mode()
     deadline = clock() + timeout_s
     pending = dict(arms)
     while pending and clock() < deadline:

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from itertools import pairwise
+
+import numpy as np
 import pytest
 
 from inspect_robots_nero._arm import NeroArm
@@ -35,11 +38,21 @@ def test_build_arms_uses_config_channels() -> None:
 def test_home_arms_moves_both_arms_to_config_home() -> None:
     arms, robots = _connected_arms()
     home_arms(arms, wait_s=0.0, sleep=lambda _seconds: None)
-    assert robots["left"].move_j_calls == [tuple(HOME_LEFT)]
-    assert robots["right"].move_j_calls == [tuple(HOME_RIGHT)]
+    # Follower-mode streaming, never a move_j trajectory: firmware >= 1.12
+    # has no position mode, so move_j executes wrongly in the default mode.
+    for robot in robots.values():
+        assert robot.move_j_calls == []
+        assert robot.move_js_calls
+        assert robot.move_js_calls[-1] in (tuple(HOME_LEFT), tuple(HOME_RIGHT))
+        # Each streamed increment stays inside the per-tick joint step bound.
+        steps = [np.asarray(call) for call in robot.move_js_calls]
+        assert all(
+            float(np.max(np.abs(later - earlier))) <= 0.1 + 1e-9
+            for earlier, later in pairwise(steps)
+        )
     for robot in robots.values():
         assert robot.enabled
-        assert robot.mode == "normal"
+        assert robot.mode == "follower"
 
 
 def test_home_arms_opens_both_grippers_to_init_width() -> None:
@@ -57,7 +70,7 @@ def test_home_arms_raises_when_an_arm_fails_to_enable() -> None:
     robots["right"].enable_result = False
     with pytest.raises(RuntimeError, match="enable"):
         home_arms(arms, wait_s=0.0, sleep=lambda _seconds: None)
-    assert robots["left"].move_j_calls == []
+    assert robots["left"].move_js_calls == []
 
 
 def test_disable_arms_polls_until_all_joints_report_limp() -> None:
@@ -120,7 +133,7 @@ def test_home_accepts_an_already_enabled_arm() -> None:
         robot.enable_result = False  # firmware returns falsy when already enabled
     home_arms(arms, wait_s=0.0, sleep=lambda _seconds: None)
     for robot in robots.values():
-        assert robot.move_j_calls  # homing proceeded despite the falsy enable
+        assert robot.move_js_calls  # homing proceeded despite the falsy enable
 
 
 def test_home_resets_a_latched_motion_controller() -> None:
@@ -128,4 +141,26 @@ def test_home_resets_a_latched_motion_controller() -> None:
     home_arms(arms, wait_s=0.0, sleep=lambda _seconds: None)
     for robot in robots.values():
         assert robot.motion_resets == 1  # homing doubles as e-stop recovery
-        assert robot.move_j_calls
+        assert robot.move_js_calls
+
+
+def test_home_raises_when_the_arms_never_settle() -> None:
+    arms, robots = _connected_arms()
+    for robot in robots.values():
+        # Jams mid-air: feedback never moves, so the settle loop must end
+        # loudly instead of streaming forever.
+        robot.move_js = lambda joints: None  # type: ignore[method-assign]
+    now = [0.0]
+
+    def stuck_clock() -> float:
+        now[0] += 6.0
+        return now[0]
+
+    with pytest.raises(RuntimeError, match="did not settle"):
+        home_arms(
+            arms,
+            wait_s=0.0,
+            sleep=lambda _seconds: None,
+            clock=stuck_clock,
+            settle_timeout_s=10.0,
+        )
