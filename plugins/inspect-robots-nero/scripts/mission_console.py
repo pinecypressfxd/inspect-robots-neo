@@ -1631,6 +1631,9 @@ _PAGE_TAIL = """</div>
     <option value="vla">vla (VLA only)</option>
   </select>
   <input id="instruction" placeholder="instruction for the run" autocomplete="off">
+  <button id="usetrained" hidden
+    title="replace the instruction with the checkpoint's exact training task string">
+    use trained task string</button>
   <button id="start">Start</button>
   <button id="stop">Stop</button>
   <button id="cancel" hidden>Cancel</button>
@@ -1675,6 +1678,24 @@ function prefillTrainedPrompt() {
 }
 policySel.addEventListener("change", prefillTrainedPrompt);
 prefillTrainedPrompt();
+// The skill policy only tracks its trained phrasing; a hand-typed near
+// variant (a comma, "then") stalls after the trained half. When a vla run
+// would submit anything else, offer the exact string in one click.
+const useTrainedBtn = document.getElementById("usetrained");
+function refreshTrainedHint() {
+  useTrainedBtn.hidden = !(
+    policySel.value === "vla" && TRAINED_PROMPT &&
+    input.value.trim() !== "" && input.value !== TRAINED_PROMPT
+  );
+}
+policySel.addEventListener("change", refreshTrainedHint);
+input.addEventListener("input", refreshTrainedHint);
+useTrainedBtn.addEventListener("click", () => {
+  input.value = TRAINED_PROMPT;
+  refreshTrainedHint();
+  input.focus();
+});
+refreshTrainedHint();
 const statusBox = document.getElementById("status");
 const verdicts = document.getElementById("verdicts");
 const feedEl = document.getElementById("feed");
@@ -2013,7 +2034,10 @@ def build_command(namespace: argparse.Namespace) -> tuple[list[str], list[str]]:
         # embodiment also paces at the checkpoint's trained action_freq
         # (10 Hz): at the nero default 30 Hz the 20-step chunk plays in 0.7 s
         # instead of the trained 2.0 s and then stalls for the next inference
-        # round trip, which reads as fast-then-frozen motion.
+        # round trip, which reads as fast-then-frozen motion. The step budget
+        # scales with the pace: the adhoc default of 300 steps is 30 s at
+        # 10 Hz and cuts the trained task after its first half (the longest
+        # demonstration runs 1086 frames), so vla runs get 1800 (180 s).
         suffix = [
             *common,
             "--policy",
@@ -2024,6 +2048,8 @@ def build_command(namespace: argparse.Namespace) -> tuple[list[str], list[str]]:
             "control_hz=10",
             "-E",
             "control_hz=10",
+            "--max-steps",
+            "1800",
         ]
     elif namespace.policy == "hybrid":
         suffix = [
