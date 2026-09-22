@@ -145,6 +145,34 @@ def test_enable_status_reports_seven_bools_or_none() -> None:
     assert arm.enable_status() == [False] * 7
 
 
+def test_enable_with_retry_accepts_an_already_enabled_arm() -> None:
+    """A falsy enable return is not a refusal when the flags say enabled.
+
+    The firmware returns falsy for an already-enabled arm; the retry loop
+    must accept the per-joint flags and move on instead of failing.
+    """
+    robot = FakeAgxRobot()
+    robot.enabled = True
+    robot.enable_result = False  # falsy for an already-enabled arm
+    arm = _arm(robot)
+    arm.connect()
+
+    arm.enable_with_retry(retries=2, retry_pause_s=0.0)
+
+    assert robot.enabled
+
+
+def test_enable_with_retry_raises_when_the_flags_never_confirm() -> None:
+    robot = FakeAgxRobot()
+    robot.enable_result = False  # refused, and the flags never turn on
+    robot.joints_enable = [False] * 7
+    arm = _arm(robot)
+    arm.connect()
+
+    with pytest.raises(RuntimeError, match="failed to enable the left arm"):
+        arm.enable_with_retry(retries=2, retry_pause_s=0.0)
+
+
 def test_enable_status_rejects_malformed_vendor_feedback() -> None:
     robot = FakeAgxRobot()
     arm = _arm(robot)

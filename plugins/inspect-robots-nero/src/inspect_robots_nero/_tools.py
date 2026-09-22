@@ -89,17 +89,7 @@ def home_arms(
         # so homing always doubles as the recovery path.
         with contextlib.suppress(Exception):
             arm.reset_motion_controller()
-        if arm.enable():
-            continue
-        for _ in range(enable_retries):
-            enabled = arm.enable_status() or []
-            if enabled and all(enabled):
-                break
-            sleep(retry_pause_s)
-            if arm.enable():
-                break
-        else:
-            raise RuntimeError(f"failed to enable the {arm.side} arm before homing")
+        arm.enable_with_retry(retries=enable_retries, retry_pause_s=retry_pause_s)
     for arm in arms.values():
         arm.set_speed_percent(SPEED_PERCENT)
         # The wrapper prefers follower mode: the only mode this firmware

@@ -293,7 +293,15 @@ class NeroEmbodiment(EmbodimentBase):
             for side in ("left", "right"):
                 self._arms[side] = self._arm_factory(side)
             for arm in self._arms.values():
-                arm.enable()
+                # Connection doubles as the recovery path: a latched e-stop
+                # (from a previous session's E-STOP or damped disable) makes
+                # the firmware silently ignore motion, and a refused enable
+                # (rig power-cycled overnight) would leave every later
+                # move_js unexecuted -- both end as an opaque settle timeout
+                # in _drive_home instead of a named fault here.
+                with contextlib.suppress(Exception):
+                    arm.reset_motion_controller()
+                arm.enable_with_retry()
                 arm.set_speed_percent(SPEED_PERCENT)
                 arm.set_normal_mode()
             for side in ("left", "right"):

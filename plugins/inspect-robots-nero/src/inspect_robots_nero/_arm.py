@@ -113,6 +113,32 @@ class NeroArm:
         assert self._robot is not None, "connect() before enable()"
         return bool(self._robot.enable())
 
+    def enable_with_retry(
+        self,
+        *,
+        retries: int = 3,
+        retry_pause_s: float = 0.5,
+    ) -> None:
+        """Enable, tolerating the firmware's falsy-but-enabled return.
+
+        ``enable()`` returns falsy both for a refused enable and for an arm
+        that is already enabled (firmware semantics), so a falsy return
+        retries a few times and then accepts the state when the per-joint
+        flags say enabled. Raises ``RuntimeError`` when the flags never
+        confirm: proceeding silently past a refused enable leaves the arm
+        ignoring every later motion command.
+        """
+        if self.enable():
+            return
+        for _ in range(retries):
+            enabled = self.enable_status() or []
+            if enabled and all(enabled):
+                return
+            self._sleep(retry_pause_s)
+            if self.enable():
+                return
+        raise RuntimeError(f"failed to enable the {self.side} arm")
+
     def reset_motion_controller(self) -> None:
         """Clear a latched motion-controller state (e-stop / damping).
 
