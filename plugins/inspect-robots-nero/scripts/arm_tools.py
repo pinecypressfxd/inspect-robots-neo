@@ -1,9 +1,9 @@
 """Operator CLI for the Nero arms: home after power-on, or drop limp fast.
 
-``home`` enables the arms, opens both grippers, and streams bounded
-``move_js`` increments to the config home poses in follower mode (firmware
->= 1.12 has no position mode; ``move_j`` trajectories misexecute in the
-default follower mode), then waits for the settle.
+``home`` recovers each arm (latch clear + enable retry), then applies the
+reference stack's reset: prime the trajectory planner with the CURRENT
+joint angles, pause, one firmware ``move_j`` straight to the config home
+from any state; grippers open after the arms.
 ``disable`` ports ``disable_arms.py``: without ``--yes`` it only warns and
 exits 2; with it, it disables and polls the per-joint enable flags until
 every joint reports limp or ``--timeout`` expires (exit 1 on timeout).

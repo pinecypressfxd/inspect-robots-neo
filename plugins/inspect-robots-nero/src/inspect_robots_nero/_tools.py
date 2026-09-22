@@ -1,11 +1,13 @@
 """Operator bring-up tools: home the arms or drop them limp on demand.
 
-Homing streams follower-mode ``move_js`` increments, the pairing the
-embodiment's reset uses and the only one this firmware honors: on Nero
-firmware >= 1.12 there is no position mode (``set_normal_mode()`` is a
-no-op the vendor warns about), so a ``move_j`` trajectory executes wrongly
-in the default follower mode. The disable path polls per-joint enable
-flags until every joint reports limp or a timeout expires.
+Homing is the reference stack's reset recipe (nero_env ``_dispatch_reset``):
+per arm, set the speed, command the CURRENT joint angles first -- the
+trajectory planner re-seats onto the measured pose, and skipping this
+prime is what made a plain ``move_j`` home execute wrongly on this
+firmware -- pause half a second, then one firmware ``move_j`` straight to
+the config home. Grippers open after the arms. The disable path polls
+per-joint enable flags until every joint reports limp or a timeout
+expires.
 """
 
 from __future__ import annotations
@@ -14,18 +16,13 @@ import contextlib
 import time
 from collections.abc import Callable, Mapping, Sequence
 
-import numpy as np
-
 from inspect_robots_nero._arm import NeroArm, clamp_to_joint_envelope
 from inspect_robots_nero._config import (
     CAN_CHANNELS,
-    CONTROL_HZ,
     GRIPPER_FORCE,
     GRIPPER_INIT_WIDTH_M,
     HOME_LEFT,
     HOME_RIGHT,
-    RESET_SETTLE_TIMEOUT_S,
-    RESET_SETTLE_TOL_RAD,
     SPEED_PERCENT,
 )
 from inspect_robots_nero._gripper import NeroGripper
@@ -63,25 +60,20 @@ def home_arms(
     *,
     wait_s: float,
     sleep: Sleeper = time.sleep,
-    clock: Clock = time.monotonic,
     enable_retries: int = 3,
     retry_pause_s: float = 0.5,
-    control_hz: float = CONTROL_HZ,
-    max_joint_step_rad: float = 0.1,
-    settle_tol_rad: float = RESET_SETTLE_TOL_RAD,
-    settle_timeout_s: float = RESET_SETTLE_TIMEOUT_S,
+    prime_s: float = 0.5,
 ) -> None:
-    """Enable every arm, open both grippers, then stream follower joints to home.
+    """Recover every arm, then firmware-reset each to home (the neo recipe).
 
     ``enable()`` returns falsy both for a refused enable and for an arm that
     is already enabled (firmware semantics), so a falsy return retries a few
     times and then accepts the state when the per-joint flags say enabled.
-    The grippers open to ``GRIPPER_INIT_WIDTH_M`` before any joint motion so
-    home lands in a known clean state without interleaving the effector's
-    CAN traffic with the joint stream. Both arms then step toward the config
-    home poses in bounded ``move_js`` increments (follower mode has no
-    firmware smoothing, so a direct jump would command a violent velocity)
-    until settled, mirroring the embodiment's reset drive.
+    Each arm then primes the trajectory planner by commanding its CURRENT
+    joint angles, pauses ``prime_s``, and issues one firmware ``move_j`` to
+    the config home -- from any current state, in one smooth motion. The
+    grippers open after both arms so their CAN traffic never interleaves
+    with a trajectory.
     """
     for arm in arms.values():
         # A latched e-stop (from damped_disable) makes the firmware ignore
@@ -100,39 +92,16 @@ def home_arms(
                 break
         else:
             raise RuntimeError(f"failed to enable the {arm.side} arm before homing")
-    for arm in arms.values():
+    for side, arm in arms.items():
         arm.set_speed_percent(SPEED_PERCENT)
-        # The wrapper prefers follower mode: the only mode this firmware
-        # honors (>= 1.12 has no position mode).
-        arm.set_normal_mode()
+        reading = arm.read_state()
+        if reading is None or len(reading) != 7:
+            raise RuntimeError(f"no joint feedback from the {arm.side} arm while homing")
+        arm.move_j(list(reading))
+        sleep(prime_s)
+        arm.move_j(clamp_to_joint_envelope(list(HOMES[side])).tolist())
     for arm in arms.values():
         NeroGripper(arm, sleep=sleep).move(GRIPPER_INIT_WIDTH_M, GRIPPER_FORCE)
-    targets = {side: clamp_to_joint_envelope(list(HOMES[side])) for side in arms}
-    deadline = clock() + settle_timeout_s
-    while True:
-        currents: dict[str, np.ndarray] = {}
-        settled = True
-        for side, arm in arms.items():
-            reading = arm.read_state()
-            if reading is None or len(reading) != 7:
-                raise RuntimeError(f"no joint feedback from the {arm.side} arm while homing")
-            current = np.asarray(reading, dtype=np.float64)
-            currents[side] = current
-            if float(np.max(np.abs(current - targets[side]))) > settle_tol_rad:
-                settled = False
-        if settled:
-            for side, arm in arms.items():
-                arm.move_js(targets[side].tolist())
-            break
-        if clock() >= deadline:
-            raise RuntimeError(
-                f"arms did not settle at home within {settle_timeout_s:g}s; "
-                "check the joint feedback and for physical obstruction"
-            )
-        for side, arm in arms.items():
-            step = np.clip(targets[side] - currents[side], -max_joint_step_rad, max_joint_step_rad)
-            arm.move_js((currents[side] + step).tolist())
-        sleep(1.0 / control_hz)
     sleep(wait_s)
 
 
