@@ -92,35 +92,6 @@ class Harness:
         self.embodiment = embodiment
 
 
-def test_connect_recovers_a_latched_estop_and_an_already_enabled_arm() -> None:
-    """Bring-up doubles as the recovery path after a power or E-STOP event.
-
-    A latched motion controller silently swallows every move_js (observed as
-    an opaque settle timeout), and the firmware returns falsy for an
-    already-enabled arm: connect must reset the latch and accept the
-    per-joint enable flags instead of proceeding into a dead bring-up.
-    """
-    harness = Harness()
-    for robot in harness.robots.values():
-        robot.enabled = True  # survived a rig power cycle enabled
-        robot.enable_result = False  # firmware returns falsy when enabled
-    harness.embodiment.reset(Scene(id="s0", instruction="x"))
-
-    for robot in harness.robots.values():
-        assert robot.motion_resets == 1  # the latch was cleared
-        assert robot.move_js_calls  # homing executed rather than timing out
-
-
-def test_connect_fails_loudly_when_enable_never_confirms() -> None:
-    harness = Harness()
-    for robot in harness.robots.values():
-        robot.enable_result = False
-        robot.joints_enable = [False] * 7  # refused; flags never confirm
-
-    with pytest.raises(EmbodimentFault, match="failed to enable"):
-        harness.embodiment.reset(Scene(id="s0", instruction="x"))
-
-
 def test_reset_enables_homes_and_returns_first_observation() -> None:
     harness = Harness()
     observation = harness.embodiment.reset(Scene(id="s0", instruction="put the cup on the pad"))

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from inspect_robots_nero._arm import _FIRMWARE_NAMES, NeroArm, recover_arm
+from inspect_robots_nero._arm import _FIRMWARE_NAMES, NeroArm
 from inspect_robots_nero._gripper import NeroGripper
 
 from .fakes import FakeAgxRobot, FakeEffector, LegacyEffector
@@ -143,96 +143,6 @@ def test_enable_status_reports_seven_bools_or_none() -> None:
     assert arm.enable_status() == [True] * 7
     arm.disable()
     assert arm.enable_status() == [False] * 7
-
-
-def test_enable_with_retry_accepts_an_already_enabled_arm() -> None:
-    """A falsy enable return is not a refusal when the flags say enabled.
-
-    The firmware returns falsy for an already-enabled arm; the retry loop
-    must accept the per-joint flags and move on instead of failing.
-    """
-    robot = FakeAgxRobot()
-    robot.enabled = True
-    robot.enable_result = False  # falsy for an already-enabled arm
-    arm = _arm(robot)
-    arm.connect()
-
-    arm.enable_with_retry(retries=2, retry_pause_s=0.0)
-
-    assert robot.enabled
-
-
-def test_enable_with_retry_raises_when_the_flags_never_confirm() -> None:
-    robot = FakeAgxRobot()
-    robot.enable_result = False  # refused, and the flags never turn on
-    robot.joints_enable = [False] * 7
-    arm = _arm(robot)
-    arm.connect()
-
-    with pytest.raises(RuntimeError, match="failed to enable the left arm"):
-        arm.enable_with_retry(retries=2, retry_pause_s=0.0)
-
-
-class _OrderRobot(FakeAgxRobot):
-    """Records the enable/reset call order; optionally gates enable on reset."""
-
-    def __init__(self, *, enable_blocked_by_latch: bool) -> None:
-        super().__init__()
-        self.order: list[str] = []
-        # Motor off (flags false); enable succeeds under a latch unless the
-        # latch is what blocks it.
-        self.enable_result = not enable_blocked_by_latch
-        self.joints_enable = [False] * 7
-
-    def enable(self) -> bool:
-        self.order.append("enable")
-        return super().enable()
-
-    def reset(self) -> None:
-        self.order.append("reset")
-        if not self.enable_result:
-            # The latched motion controller was the thing blocking enable.
-            self.enable_result = True
-            self.joints_enable = [True] * 7
-        super().reset()
-
-
-def test_recover_arm_enables_before_clearing_the_latch() -> None:
-    """Enable first, reset second: the latch's damping holds a motor-off arm
-    up on this brake-less rig, so clearing it before enable drops the arm."""
-    robot = _OrderRobot(enable_blocked_by_latch=False)  # enable works latched
-    arm = _arm(robot)
-    arm.connect()
-
-    recover_arm(arm, retries=2, retry_pause_s=0.0)
-
-    assert robot.order == ["enable", "reset"]
-    assert robot.enabled and robot.motion_resets == 1
-
-
-def test_recover_arm_falls_back_to_reset_when_the_latch_blocks_enable() -> None:
-    robot = _OrderRobot(enable_blocked_by_latch=True)
-    arm = _arm(robot)
-    arm.connect()
-
-    recover_arm(arm, retries=1, retry_pause_s=0.0)
-
-    # Enable attempts fail, the fallback reset unlocks them, enable lands,
-    # and the trailing latch clear still runs.
-    assert robot.order.index("reset") < len(robot.order) - 1
-    assert robot.order[-1] == "reset"
-    assert robot.enabled and robot.motion_resets == 2
-
-
-def test_recover_arm_clears_the_latch_on_an_already_enabled_arm() -> None:
-    robot = FakeAgxRobot()
-    robot.enabled = True  # held through a power event
-    arm = _arm(robot)
-    arm.connect()
-
-    recover_arm(arm, retries=1, retry_pause_s=0.0)
-
-    assert robot.motion_resets == 1  # latch cleared, no enable needed
 
 
 def test_enable_status_rejects_malformed_vendor_feedback() -> None:

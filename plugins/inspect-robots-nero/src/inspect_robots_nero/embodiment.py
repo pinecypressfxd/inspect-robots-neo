@@ -35,7 +35,7 @@ from inspect_robots import (
 from inspect_robots.embodiment import RESETTABLE, SELF_PACED
 from inspect_robots.errors import EmbodimentFault
 from inspect_robots.spaces import CANONICAL_STATE_UNITS
-from inspect_robots_nero._arm import clamp_to_joint_envelope, recover_arm
+from inspect_robots_nero._arm import clamp_to_joint_envelope
 from inspect_robots_nero._config import (
     ACTION_DIM,
     CAMERA_DEFAULTS,
@@ -293,14 +293,7 @@ class NeroEmbodiment(EmbodimentBase):
             for side in ("left", "right"):
                 self._arms[side] = self._arm_factory(side)
             for arm in self._arms.values():
-                # Connection doubles as the recovery path: a latched e-stop
-                # from a previous session silently ignores motion, and a
-                # refused enable leaves every later move_js unexecuted.
-                # recover_arm enables BEFORE clearing the latch: the latch's
-                # damping is what holds a motor-off arm up on this brake-less
-                # rig, so clearing it first drops the arm before enable can
-                # catch it.
-                recover_arm(arm)
+                arm.enable()
                 arm.set_speed_percent(SPEED_PERCENT)
                 arm.set_normal_mode()
             for side in ("left", "right"):

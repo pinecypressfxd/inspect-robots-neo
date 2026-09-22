@@ -16,7 +16,7 @@ from collections.abc import Callable, Mapping, Sequence
 
 import numpy as np
 
-from inspect_robots_nero._arm import NeroArm, clamp_to_joint_envelope, recover_arm
+from inspect_robots_nero._arm import NeroArm, clamp_to_joint_envelope
 from inspect_robots_nero._config import (
     CAN_CHANNELS,
     CONTROL_HZ,
@@ -84,10 +84,22 @@ def home_arms(
     until settled, mirroring the embodiment's reset drive.
     """
     for arm in arms.values():
-        # Recovery order matters on this brake-less rig: enable first (the
-        # motors hold position), then clear a latched e-stop -- clearing the
-        # latch first releases the damping that holds a motor-off arm up.
-        recover_arm(arm, retries=enable_retries, retry_pause_s=retry_pause_s)
+        # A latched e-stop (from damped_disable) makes the firmware ignore
+        # motion commands until the controller is reset; reset unconditionally
+        # so homing always doubles as the recovery path.
+        with contextlib.suppress(Exception):
+            arm.reset_motion_controller()
+        if arm.enable():
+            continue
+        for _ in range(enable_retries):
+            enabled = arm.enable_status() or []
+            if enabled and all(enabled):
+                break
+            sleep(retry_pause_s)
+            if arm.enable():
+                break
+        else:
+            raise RuntimeError(f"failed to enable the {arm.side} arm before homing")
     for arm in arms.values():
         arm.set_speed_percent(SPEED_PERCENT)
         # The wrapper prefers follower mode: the only mode this firmware
