@@ -47,6 +47,30 @@ def joint_envelope() -> tuple[np.ndarray, np.ndarray]:
     return low, high
 
 
+def recover_arm(arm: NeroArm, *, retries: int = 3, retry_pause_s: float = 0.5) -> None:
+    """Bring one arm from any boot or e-stop state to enabled with a clear latch.
+
+    Order is a safety property on this brake-less rig: the latched e-stop
+    holds a motor-off arm up with joint damping, and clearing the latch
+    FIRST releases that hold -- the arm falls before enable can catch it
+    (observed on the rig). So enable first when the flags allow it (the
+    motors then hold position through the latch clear), and only fall back
+    to reset-then-enable when enable cannot confirm at all -- the latch may
+    be blocking enable itself, and releasing the damped hold is the only
+    path forward.
+    """
+    flags = arm.enable_status() or []
+    if not (flags and all(flags)):
+        try:
+            arm.enable_with_retry(retries=retries, retry_pause_s=retry_pause_s)
+        except RuntimeError:
+            with contextlib.suppress(Exception):
+                arm.reset_motion_controller()
+            arm.enable_with_retry(retries=retries, retry_pause_s=retry_pause_s)
+    with contextlib.suppress(Exception):
+        arm.reset_motion_controller()
+
+
 def clamp_to_joint_envelope(joints: Sequence[float] | np.ndarray) -> np.ndarray:
     """Clamp commanded joints into the envelope so the firmware never faults.
 
