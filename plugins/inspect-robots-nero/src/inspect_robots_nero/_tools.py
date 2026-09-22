@@ -60,38 +60,21 @@ def home_arms(
     *,
     wait_s: float,
     sleep: Sleeper = time.sleep,
-    enable_retries: int = 3,
-    retry_pause_s: float = 0.5,
     prime_s: float = 0.5,
 ) -> None:
-    """Recover every arm, then firmware-reset each to home (the neo recipe).
+    """Firmware-reset every arm to home: the reference recipe, nothing else.
 
-    ``enable()`` returns falsy both for a refused enable and for an arm that
-    is already enabled (firmware semantics), so a falsy return retries a few
-    times and then accepts the state when the per-joint flags say enabled.
-    Each arm then primes the trajectory planner by commanding its CURRENT
-    joint angles, pauses ``prime_s``, and issues one firmware ``move_j`` to
-    the config home -- from any current state, in one smooth motion. The
-    grippers open after both arms so their CAN traffic never interleaves
-    with a trajectory.
+    Mirrors nero_env's start + _dispatch_reset pair and deliberately carries
+    no latch-clearing or enable-retry machinery: set the follower mode the
+    reference runs under, one plain enable, then per arm command the CURRENT
+    joint angles (seating the trajectory planner onto the measured pose),
+    pause, and one firmware ``move_j`` straight to the config home. Grippers
+    open after the arms. Recovery from a latched e-stop is the operator's
+    explicit business (arm power cycle), not Home's.
     """
     for arm in arms.values():
-        # A latched e-stop (from damped_disable) makes the firmware ignore
-        # motion commands until the controller is reset; reset unconditionally
-        # so homing always doubles as the recovery path.
-        with contextlib.suppress(Exception):
-            arm.reset_motion_controller()
-        if arm.enable():
-            continue
-        for _ in range(enable_retries):
-            enabled = arm.enable_status() or []
-            if enabled and all(enabled):
-                break
-            sleep(retry_pause_s)
-            if arm.enable():
-                break
-        else:
-            raise RuntimeError(f"failed to enable the {arm.side} arm before homing")
+        arm.set_normal_mode()
+        arm.enable()
     for side, arm in arms.items():
         arm.set_speed_percent(SPEED_PERCENT)
         reading = arm.read_state()

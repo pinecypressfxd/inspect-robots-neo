@@ -38,6 +38,9 @@ _FAKE_INITIAL = (0.1, 0.2, 0.0, 0.5, 0.0, 0.0, 0.3)  # FakeAgxRobot's start pose
 def test_home_arms_primes_then_move_js_straight_home() -> None:
     arms, robots = _connected_arms()
     home_arms(arms, wait_s=0.0, sleep=lambda _seconds: None)
+    for robot in robots.values():
+        # No latch machinery: Home never resets the motion controller.
+        assert robot.motion_resets == 0
     for side, robot in robots.items():
         # The reference reset: one move_j commanding the CURRENT joints
         # (priming the trajectory planner onto the measured pose), then one
@@ -55,14 +58,6 @@ def test_home_arms_opens_both_grippers_to_init_width() -> None:
         # Home is a clean state: each gripper is commanded fully open once,
         # releasing whatever width the previous run left (e.g. a grasp).
         assert robot.effectors[0].moves == [(GRIPPER_INIT_WIDTH_M, GRIPPER_FORCE)]
-
-
-def test_home_arms_raises_when_an_arm_fails_to_enable() -> None:
-    arms, robots = _connected_arms()
-    robots["right"].enable_result = False
-    with pytest.raises(RuntimeError, match="enable"):
-        home_arms(arms, wait_s=0.0, sleep=lambda _seconds: None)
-    assert robots["left"].move_j_calls == []
 
 
 def test_disable_arms_polls_until_all_joints_report_limp() -> None:
@@ -116,21 +111,3 @@ def test_connect_all_disconnects_successful_sides_when_one_fails() -> None:
         connect_all(arms)
     assert robots["left"].disconnected
     assert not robots["right"].disconnected
-
-
-def test_home_accepts_an_already_enabled_arm() -> None:
-    arms, robots = _connected_arms()
-    for robot in robots.values():
-        robot.enabled = True  # an earlier process enabled and never closed
-        robot.enable_result = False  # firmware returns falsy when already enabled
-    home_arms(arms, wait_s=0.0, sleep=lambda _seconds: None)
-    for robot in robots.values():
-        assert robot.move_j_calls  # homing proceeded despite the falsy enable
-
-
-def test_home_resets_a_latched_motion_controller() -> None:
-    arms, robots = _connected_arms()
-    home_arms(arms, wait_s=0.0, sleep=lambda _seconds: None)
-    for robot in robots.values():
-        assert robot.motion_resets == 1  # homing doubles as e-stop recovery
-        assert robot.move_j_calls
