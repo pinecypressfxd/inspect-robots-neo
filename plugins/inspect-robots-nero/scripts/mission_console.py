@@ -685,6 +685,28 @@ class RunManager:
         run = self.status()
         return run.get("state") not in ("running", "external") or self._stop_requested
 
+    def skip_pending_verdict(self, *, timeout_s: float = 5.0, poll_s: float = 0.2) -> str | None:
+        """Resolve a pending verdict with ``skip`` so a new run can start.
+
+        Verdicts are optional for the operator: a stopped run parked at the
+        y/n/prompt is answered with the prompt's own ``skip`` choice, then
+        given a bounded window to finish before the caller proceeds.
+        Returns an error message only when the run will not exit.
+        """
+        run = self.current()
+        if run is None or run.get("exit_code") is not None or not self._stop_requested:
+            return None
+        error = self.write_line("skip")
+        if error is not None:
+            return error
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            run = self.current()
+            if run is None or run.get("exit_code") is not None:
+                return None
+            time.sleep(poll_s)
+        return "the previous run is still closing after skipping its verdict; try Start again"
+
     def force_end(self) -> str | None:
         """Emergency end for a wedged run: ``/stop``, terminate, then kill.
 
@@ -1264,6 +1286,12 @@ class MissionRequestHandler(BaseHTTPRequestHandler):
         policy = body.get("policy", self.server.default_policy)
         if policy not in ("agent", "hybrid", "vla"):
             self._send_json(400, {"error": f"unknown policy {policy!r}"})
+            return
+        # Verdicts are optional: a run parked at the y/n/prompt after Stop is
+        # skipped automatically instead of blocking the next Start.
+        skip_error = self.server.runs.skip_pending_verdict()
+        if skip_error is not None:
+            self._send_json(409, {"error": skip_error})
             return
         self.server.default_policy = policy
         suffix = self.server.build_suffix(policy)
