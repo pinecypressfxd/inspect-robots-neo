@@ -26,13 +26,18 @@ class Workspace:
         if mode not in ("playground", "test"):
             raise WorkspaceError(f"unknown mode {mode}")
         self.root = root
+        self._root_resolved = root.resolve()
         self.mode = mode
 
     @classmethod
     def create(
         cls, parent: Path, instruction: str, *, mode: str, stamp: str
     ) -> Workspace:
+        parent_resolved = parent.resolve()
         root = parent / stamp
+        root_resolved = root.resolve()
+        if parent_resolved not in root_resolved.parents:
+            raise WorkspaceError(f"stamp escapes parent: {stamp}")
         root.mkdir(parents=True)
         workspace = cls(root, mode)
         (root / "task.md").write_text(instruction, encoding="utf-8")
@@ -65,6 +70,10 @@ class Workspace:
         shutil.copytree(self.root / "lessons", dest / "lessons")
 
     def seed_from(self, freeze_dir: Path) -> None:
+        skills_src = freeze_dir / "skills"
+        lessons_src = freeze_dir / "lessons"
+        if not skills_src.is_dir() or not lessons_src.is_dir():
+            raise WorkspaceError("freeze directory missing skills or lessons")
         for name in ("skills", "lessons"):
             target = self.root / name
             shutil.rmtree(target)
@@ -76,7 +85,7 @@ class Workspace:
 
     def _writable(self, relative: str) -> Path:
         path = self._inside(relative)
-        rel = path.relative_to(self.root).as_posix()
+        rel = path.relative_to(self._root_resolved).as_posix()
         locked = rel in ("task.md", "primitives.md")
         locked = locked or rel.startswith(("submits/", "freeze/"))
         if locked:
@@ -89,7 +98,7 @@ class Workspace:
         return path
 
     def _inside(self, relative: str) -> Path:
-        root = self.root.resolve()
+        root = self._root_resolved
         path = (self.root / relative).resolve()
         if path != root and root not in path.parents:
             raise WorkspaceError(f"path escapes workspace: {relative}")
