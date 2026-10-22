@@ -353,7 +353,8 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="horizon of an --instruction or --auto-task run (default: config or "
-        f"{_ADHOC_MAX_STEPS_FALLBACK}); invalid with --task",
+        f"{_ADHOC_MAX_STEPS_FALLBACK}; 0 runs until the policy stops); "
+        "invalid with --task",
     )
     p_run.add_argument(
         "--scorer",
@@ -1691,8 +1692,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
         raise SystemExit(
             "-T only applies to --task runs; an ad-hoc instruction task takes no constructor args"
         )
-    if args.max_steps is not None and args.max_steps < 1:
-        raise SystemExit(f"--max-steps must be >= 1, got {args.max_steps}")
+    if args.max_steps is not None and args.max_steps < 0:
+        raise SystemExit(f"--max-steps must be >= 0, got {args.max_steps}")
     _check_shared_run_conflicts(args)
 
     defaults = load_defaults(os.environ)
@@ -1701,11 +1702,14 @@ def _cmd_run(args: argparse.Namespace) -> int:
     max_steps: int | None = None
     if is_adhoc:
         scorer_name = args.scorer or defaults.scorer or _ADHOC_SCORER_FALLBACK
-        max_steps = (
-            args.max_steps
-            if args.max_steps is not None
-            else (defaults.max_steps or _ADHOC_MAX_STEPS_FALLBACK)
-        )
+        if args.max_steps == 0:
+            max_steps = None
+        else:
+            max_steps = (
+                args.max_steps
+                if args.max_steps is not None
+                else (defaults.max_steps or _ADHOC_MAX_STEPS_FALLBACK)
+            )
         scorer = _resolve_or_exit("scorer", scorer_name)
         if is_auto:
             task = None

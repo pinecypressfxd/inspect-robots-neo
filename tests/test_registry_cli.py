@@ -4805,9 +4805,9 @@ def test_adhoc_only_flags_rejected_with_task() -> None:
         main([*base, "--scorer", "operator"])
 
 
-@pytest.mark.parametrize("max_steps_value", ["0", "-5"])
-def test_cli_run_zero_max_steps_exits_with_guided_error(max_steps_value: str) -> None:
-    """--max-steps 0 / negative must produce a guided SystemExit, not a raw traceback (#248)."""
+@pytest.mark.parametrize("max_steps_value", ["-5"])
+def test_cli_run_negative_max_steps_exits_with_guided_error(max_steps_value: str) -> None:
+    """A negative --max-steps must produce a guided SystemExit, not a raw traceback."""
     with pytest.raises(SystemExit) as excinfo:
         main(
             [
@@ -4823,10 +4823,34 @@ def test_cli_run_zero_max_steps_exits_with_guided_error(max_steps_value: str) ->
                 "--no-prompt",
             ]
         )
-    # Pin the whole message: the flag speaks in its own terms rather than
-    # echoing Task's internal wording, so a regression to
-    # "--max-steps: Task 'adhoc': max_steps must be >= 1" fails here.
-    assert str(excinfo.value) == f"--max-steps must be >= 1, got {max_steps_value}"
+    assert str(excinfo.value) == f"--max-steps must be >= 0, got {max_steps_value}"
+
+
+def test_cli_run_zero_max_steps_is_unlimited(monkeypatch: pytest.MonkeyPatch) -> None:
+    """--max-steps 0 means the policy stops the run, not a one-step horizon."""
+    seen: dict[str, object] = {}
+
+    def _capture(task: object, *_args: object, **_kwargs: object) -> list[object]:
+        seen["max_steps"] = task.max_steps  # type: ignore[attr-defined]
+        raise RuntimeError("stop before the rollout")
+
+    monkeypatch.setattr("inspect_robots.eval", _capture)
+    with pytest.raises(RuntimeError, match="stop before the rollout"):
+        main(
+            [
+                "run",
+                "--instruction",
+                "wipe the table",
+                "--policy",
+                "scripted",
+                "--embodiment",
+                "cubepick",
+                "--max-steps",
+                "0",
+                "--no-prompt",
+            ]
+        )
+    assert seen["max_steps"] is None
 
 
 def test_task_args_rejected_with_instruction() -> None:

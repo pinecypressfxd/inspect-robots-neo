@@ -310,9 +310,9 @@ def test_task_validation_and_scorer_names() -> None:
     from inspect_robots.task import Epochs, Task
 
     scene = Scene(id="s", instruction="x")
-    with pytest.raises(ConfigError, match="exactly one"):
-        Task(name="t", scenes=[scene], scorer="success_at_end")
-    with pytest.raises(ConfigError, match="exactly one"):
+    open_task = Task(name="t", scenes=[scene], scorer="success_at_end")
+    assert open_task.envelope.max_steps is None
+    with pytest.raises(ConfigError, match="at most one"):
         Task(
             name="t",
             scenes=[scene],

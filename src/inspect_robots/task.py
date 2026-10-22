@@ -47,7 +47,7 @@ class TaskEnvelope:
     """
 
     name: str
-    max_steps: int
+    max_steps: int | None
 
 
 @dataclass
@@ -57,9 +57,10 @@ class Task:
     ``scorer`` accepts scorer objects or **registry names** (e.g.
     ``scorer="success_at_end"``), or a sequence mixing both.
 
-    Declare exactly one rollout horizon. ``max_steps`` is already resolved;
-    ``max_seconds`` is keyword-only and is resolved against the paired
-    embodiment's positive finite ``control_hz`` by ``eval()``.
+    Declare at most one rollout horizon. Omit both to run until the policy
+    stops. ``max_steps`` is already resolved; ``max_seconds`` is keyword-only
+    and is resolved against the paired embodiment's positive finite
+    ``control_hz`` by ``eval()``.
     """
 
     name: str
@@ -71,9 +72,9 @@ class Task:
     max_seconds: float | None = field(default=None, kw_only=True)
 
     def __post_init__(self) -> None:
-        if (self.max_steps is None) == (self.max_seconds is None):
+        if self.max_steps is not None and self.max_seconds is not None:
             raise ConfigError(
-                f"Task {self.name!r}: declare exactly one of max_steps or max_seconds"
+                f"Task {self.name!r}: declare at most one of max_steps or max_seconds"
             )
         if self.max_steps is not None and (isinstance(self.max_steps, bool) or self.max_steps < 1):
             raise ConfigError(f"Task {self.name!r}: max_steps must be >= 1, got {self.max_steps}")
@@ -137,6 +138,8 @@ class Task:
         """
         if self.max_steps is not None:
             return TaskEnvelope(name=self.name, max_steps=self.max_steps)
+        if self.max_seconds is None:
+            return TaskEnvelope(name=self.name, max_steps=None)
 
         if (
             control_hz is None

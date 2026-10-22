@@ -1228,6 +1228,13 @@ class MissionRequestHandler(BaseHTTPRequestHandler):
             status["arm_tool"] = self.server.armtools.describe()
             status["lerobot"] = self.server.exports.describe()
             status["verdict_pending"] = self.server.runs._stop_requested
+            root = getattr(self.server, "evo_workspace", None)
+            outcome_missing = root is not None and not (Path(root) / "outcome.json").is_file()
+            waiting = root is not None and (Path(root) / "awaiting_outcome").is_file()
+            if self.server.default_policy == "evo" and outcome_missing and (
+                status["state"] == "ended" or waiting
+            ):
+                status["needs_outcome"] = True
             self._send_json(200, status)
         elif path == "/api/feed":
             self._api_feed(query)
@@ -1262,6 +1269,8 @@ class MissionRequestHandler(BaseHTTPRequestHandler):
             self._api_home()
         elif path == "/api/estop":
             self._api_estop()
+        elif path == "/api/evo-outcome":
+            self._api_evo_outcome()
         else:
             self._send_plain(404, "not found\n")
 
@@ -1284,7 +1293,7 @@ class MissionRequestHandler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": "instruction must be non-empty"})
             return
         policy = body.get("policy", self.server.default_policy)
-        if policy not in ("agent", "hybrid", "vla"):
+        if policy not in ("agent", "hybrid", "vla", "evo"):
             self._send_json(400, {"error": f"unknown policy {policy!r}"})
             return
         # Verdicts are optional: a run parked at the y/n/prompt after Stop is
@@ -1294,6 +1303,17 @@ class MissionRequestHandler(BaseHTTPRequestHandler):
             self._send_json(409, {"error": skip_error})
             return
         self.server.default_policy = policy
+        if policy == "evo":
+            mode = body.get("evo_mode", self.server.launch_args.evo_mode)
+            if mode not in ("playground", "test"):
+                self._send_json(400, {"error": "evo_mode must be playground or test"})
+                return
+            stamp = time.strftime("%Y%m%d-%H%M%S")
+            root = Path(".inspect_traces") / "evo" / f"{stamp}_{os.urandom(2).hex()}"
+            root.mkdir(parents=True, exist_ok=True)
+            self.server.launch_args.evo_mode = mode
+            self.server.launch_args.evo_workspace = str(root.resolve())
+            self.server.evo_workspace = root
         suffix = self.server.build_suffix(policy)
         error = self.server.runs.start(
             instruction.strip(),
@@ -1355,6 +1375,52 @@ class MissionRequestHandler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": "; ".join(messages)})
         else:
             self._send_json(200, {"ok": True})
+
+    def _api_evo_outcome(self) -> None:
+        """Write the operator label. Reflect only if the run process is already gone."""
+        body = self._read_json_body()
+        if body is None:
+            return
+        success = body.get("success")
+        if not isinstance(success, bool):
+            self._send_json(400, {"error": "success must be a bool"})
+            return
+        root = getattr(self.server, "evo_workspace", None)
+        if root is None:
+            self._send_json(400, {"error": "no evo workspace"})
+            return
+        (Path(root) / "outcome.json").write_text(
+            json.dumps({"success": success}), encoding="utf-8"
+        )
+        if self.server.runs.status().get("state") == "ended":
+            self._reflect_stopped_evo(Path(root))
+        self._send_json(200, {"ok": True})
+
+    def _reflect_stopped_evo(self, root: Path) -> None:
+        """Update skills after E-STOP killed the process. Does not move the robot."""
+        plugin = Path(__file__).resolve().parents[2] / "inspect-robots-evo" / "src"
+        if str(plugin) not in sys.path:
+            sys.path.insert(0, str(plugin))
+        try:
+            from inspect_robots_agent._llm import Provider
+            from inspect_robots_agent._responses import ResponsesClient
+            from inspect_robots_evo.episode import reflect_dir
+            from inspect_robots_evo.policy import ResponsesModel
+            from inspect_robots_evo.workspace import Workspace
+        except ImportError as exc:
+            print(f"[console] evo reflection skipped: {exc}")
+            return
+        args = self.server.launch_args
+        workspace = Workspace(root, getattr(args, "evo_mode", "playground"))
+        client = ResponsesClient(
+            Provider(
+                base_url=args.base_url,
+                api_key=os.environ.get(args.api_key_env, ""),
+                model=args.model,
+                wire="responses",
+            )
+        )
+        reflect_dir(workspace, ResponsesModel(client))
 
     def _request_allowed(self) -> bool:
         """Whether the request is addressed to this console, not a foreign origin.
@@ -1657,6 +1723,11 @@ _PAGE_TAIL = """</div>
     <option value="agent">agent (LLM only)</option>
     <option value="hybrid">hybrid (LLM + VLA)</option>
     <option value="vla">vla (VLA only)</option>
+    <option value="evo">evo (EmbodiedEvo)</option>
+  </select>
+  <select id="evomode">
+    <option value="playground">playground</option>
+    <option value="test">test</option>
   </select>
   <input id="instruction" placeholder="instruction for the run" autocomplete="off">
   <button id="usetrained" hidden
@@ -1667,6 +1738,10 @@ _PAGE_TAIL = """</div>
   <button id="cancel" hidden>Cancel</button>
   <button id="home">Home arms</button>
   <button id="estop" title="disable both arms and force-end the run">E-STOP</button>
+  <span id="evooutcome" hidden>
+    <button id="evoyes" type="button">success</button>
+    <button id="evono" type="button">failure</button>
+  </span>
   <span id="verdicts" hidden>
     <button data-choice="y">verdict y</button>
     <button data-choice="n">verdict n</button>
@@ -1783,6 +1858,7 @@ function render(status) {
   if (status.error) { parts.push("error: " + status.error); }
   statusBox.textContent = parts.join("   |   ");
   verdicts.hidden = state === "idle";
+  document.getElementById("evooutcome").hidden = !status.needs_outcome;
   stopBtn.disabled = state !== "running";
   startBtn.disabled = state === "running";
   if ((state === "running" || state === "external") && tileMode !== "frames") {
@@ -1949,13 +2025,23 @@ startBtn.addEventListener("click", () => {
     return;
   }
   disarm();
-  post("/api/start", { instruction: input.value, policy: policySel.value });
+  post("/api/start", {
+    instruction: input.value,
+    policy: policySel.value,
+    evo_mode: document.getElementById("evomode").value,
+  });
 });
 cancelBtn.addEventListener("click", disarm);
 input.addEventListener("input", disarm);
 stopBtn.addEventListener("click", () => post("/api/stop", {}));
 document.getElementById("home").addEventListener("click", () => post("/api/home", {}));
 document.getElementById("estop").addEventListener("click", () => post("/api/estop", {}));
+document.getElementById("evoyes").addEventListener("click", () => {
+  post("/api/evo-outcome", { success: true });
+});
+document.getElementById("evono").addEventListener("click", () => {
+  post("/api/evo-outcome", { success: false });
+});
 for (const btn of verdicts.querySelectorAll("button")) {
   btn.addEventListener("click", () => post("/api/verdict", { choice: btn.dataset.choice }));
 }
@@ -2057,7 +2143,27 @@ def build_command(namespace: argparse.Namespace) -> tuple[list[str], list[str]]:
         "-E",
         "operator_reset_confirm=False",
     ]
-    if namespace.policy in ("vla", "umi-replay"):  # selector value or the pre-rename alias
+    if namespace.policy == "evo":
+        suffix = [
+            *common,
+            "--policy",
+            "evo",
+            "-P",
+            f"model={namespace.model}",
+            "-P",
+            "wire=responses",
+            "-P",
+            f"base_url={namespace.base_url}",
+            "-P",
+            f"api_key_env={namespace.api_key_env}",
+            "-P",
+            f"mode={namespace.evo_mode}",
+            "-P",
+            f"workspace={namespace.evo_workspace}",
+            "--max-steps",
+            "0",
+        ]
+    elif namespace.policy in ("vla", "umi-replay"):  # selector value or the pre-rename alias
         # Pure VLA baseline: the same instruction is the trained prompt. The
         # embodiment also paces at the checkpoint's trained action_freq
         # (10 Hz): at the nero default 30 Hz the 20-step chunk plays in 0.7 s
@@ -2156,9 +2262,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--policy",
-        choices=["agent", "hybrid", "vla"],
+        choices=["agent", "hybrid", "vla", "evo"],
         default="agent",
         help="policy the spawned runs use (agent needs the LLM flags below)",
+    )
+    parser.add_argument(
+        "--evo-mode",
+        choices=["playground", "test"],
+        default="playground",
+        help="evo workspace mode (default: playground)",
     )
     parser.add_argument(
         "--model",
@@ -2214,6 +2326,7 @@ def main(argv: list[str] | None = None) -> int:
         )
 
     pool = CameraPool(overrides)
+    args.evo_workspace = ""
     prefix, suffix = build_command(args)
     exporter = LerobotExporter(Path(__file__).with_name("export_lerobot.py"), Path(args.log_dir))
     runs = RunManager(prefix, suffix, Path(args.log_dir), exporter)
@@ -2229,6 +2342,7 @@ def main(argv: list[str] | None = None) -> int:
         args.policy,
         lambda policy: build_command(_policy_namespace(args, policy))[1],
     )
+    server.launch_args = args
     print(f"[console] mission console on http://{args.host}:{args.port}/")
     print(f"[console] cameras: {', '.join(pool.describe())}")
     print(f"[console] start command: {' '.join([*prefix, '<instruction>', *suffix])}")

@@ -181,6 +181,13 @@ def evo_policy(**kwargs: object) -> EvoPolicy:
         raise ValueError("evo requires a model")
     mode = str(kwargs.get("mode", "playground"))
     workspace = _workspace(kwargs.get("workspace"), mode)
+    if "outcome_reader" in kwargs:
+        reader = kwargs["outcome_reader"]
+    else:
+
+        def reader() -> bool:
+            return _wait_for_outcome(workspace)
+
     if isinstance(model, str):
         key_env = str(kwargs.get("api_key_env", ""))
         client = ResponsesClient(
@@ -191,10 +198,20 @@ def evo_policy(**kwargs: object) -> EvoPolicy:
                 wire="responses",
             )
         )
-        return EvoPolicy(ResponsesModel(client), workspace)
+        return EvoPolicy(ResponsesModel(client), workspace, outcome_reader=reader)
     if not hasattr(model, "complete"):
         raise ValueError("evo model must be a name or a complete() client")
-    return EvoPolicy(model, workspace)
+    return EvoPolicy(model, workspace, outcome_reader=reader)
+
+
+def _wait_for_outcome(workspace: Workspace) -> bool:
+    """阻塞到控制台写入 outcome.json, 再返回操作员的成败."""
+    (workspace.root / "awaiting_outcome").write_text("1", encoding="utf-8")
+    path = workspace.root / "outcome.json"
+    while not path.is_file():
+        time.sleep(0.05)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    return bool(payload["success"])
 
 
 def _workspace(value: object, mode: str) -> Workspace:

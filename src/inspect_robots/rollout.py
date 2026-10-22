@@ -250,7 +250,7 @@ def rollout(
     embodiment: Embodiment,
     scene: Scene,
     *,
-    max_steps: int,
+    max_steps: int | None,
     seed: int | None,
     epoch: int,
     controller: Controller,
@@ -322,7 +322,7 @@ def rollout(
 
         obs_rec, refs = _store_frames(frame_store, trial_id, 0, obs)
         t = 0
-        while t < max_steps:
+        while max_steps is None or t < max_steps:
             poll = None
             if operator_input is not None and console_ok:
                 try:
