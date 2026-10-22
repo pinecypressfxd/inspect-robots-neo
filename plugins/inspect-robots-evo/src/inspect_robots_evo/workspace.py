@@ -22,6 +22,8 @@ Unlisted dimensions hold. Meters. Gripper 0 closed, 0.09 open.
 
 
 class Workspace:
+    """一个任务目录. write_file 按模式限制可写路径."""
+
     def __init__(self, root: Path, mode: str) -> None:
         if mode not in ("playground", "test"):
             raise WorkspaceError(f"unknown mode {mode}")
@@ -33,6 +35,7 @@ class Workspace:
     def create(
         cls, parent: Path, instruction: str, *, mode: str, stamp: str
     ) -> Workspace:
+        """建立任务说明, 原语文档和空的提交文件."""
         parent_resolved = parent.resolve()
         root = parent / stamp
         root_resolved = root.resolve()
@@ -51,17 +54,20 @@ class Workspace:
         return workspace
 
     def write_file(self, relative: str, text: str) -> None:
+        """写入白名单内的相对路径."""
         path = self._writable(relative)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8")
 
     def read_file(self, relative: str) -> str:
+        """读取工作区里的一个文件."""
         path = self._inside(relative)
         if not path.is_file():
             raise WorkspaceError(f"no file {relative}")
         return path.read_text(encoding="utf-8")
 
     def freeze(self) -> None:
+        """只复制 skills 和 lessons."""
         dest = self.root / "freeze"
         if dest.exists():
             shutil.rmtree(dest)
@@ -70,6 +76,7 @@ class Workspace:
         shutil.copytree(self.root / "lessons", dest / "lessons")
 
     def seed_from(self, freeze_dir: Path) -> None:
+        """用一份冻结结果替换当前 skills 和 lessons."""
         skills_src = freeze_dir / "skills"
         lessons_src = freeze_dir / "lessons"
         if not skills_src.is_dir() or not lessons_src.is_dir():
@@ -80,6 +87,7 @@ class Workspace:
             shutil.copytree(freeze_dir / name, target)
 
     def record_outcome(self, success: bool) -> None:
+        """记录操作员给出的成功或失败."""
         payload = json.dumps({"success": success})
         (self.root / "outcome.json").write_text(payload, encoding="utf-8")
 

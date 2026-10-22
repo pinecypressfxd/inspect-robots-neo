@@ -58,12 +58,14 @@ class Executor:
         max_moves: int = 80,
         timeout_s: float = 600.0,
         clock: Callable[[], float] | None = None,
+        observation_provider: Callable[[], Mapping[str, object]] | None = None,
     ) -> None:
         self.workspace = workspace
         self.port = port
         self.max_moves = max_moves
         self.timeout_s = timeout_s
         self.clock = clock or time.monotonic
+        self.observation_provider = observation_provider
 
     def run(self, abort: object) -> SubmitResult:
         """执行 solve(), 直到返回, 超限, 超时或中断."""
@@ -110,6 +112,8 @@ class Executor:
 
         def get_observation() -> dict[str, object]:
             self._guard(abort, start)
+            if self.observation_provider is not None:
+                return dict(self.observation_provider())
             zeros = dict.fromkeys(DIM_LABELS, 0.0)
             return {
                 "left_rgbd": None,

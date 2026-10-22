@@ -66,6 +66,7 @@ class Episode:
     workspace: Workspace
     port: MotionPort
     outcome_reader: Callable[[], bool] | None = None
+    observation_provider: Callable[[], dict[str, object]] | None = None
     max_submits: int = 20
     max_model_calls: int = 80
     max_reflection_calls: int = 10
@@ -98,7 +99,11 @@ class Episode:
                 self.workspace.write_file(path, str(turn.arguments["text"]))
                 self._note(turn, "wrote")
             elif turn.name == "submit_code":
-                result = Executor(self.workspace, self.port).run(abort)
+                result = Executor(
+                    self.workspace,
+                    self.port,
+                    observation_provider=self.observation_provider,
+                ).run(abort)
                 self._store(submits, result)
                 submits += 1
                 detail = f"{result.status} {result.value or ''} {result.traceback or ''}"

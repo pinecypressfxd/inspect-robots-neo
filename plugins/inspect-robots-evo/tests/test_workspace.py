@@ -21,7 +21,7 @@ def test_playground_write_accepts_skills_and_rejects_task(tmp_path: Path) -> Non
     workspace = Workspace.create(tmp_path, "task", mode="playground", stamp="s")
     workspace.write_file("skills/pick.py", "def pick():\n    return 1\n")
     workspace.write_file("lessons/grip.md", "close before lift\n")
-    with pytest.raises(WorkspaceError, match="task.md"):
+    with pytest.raises(WorkspaceError, match=r"task\.md"):
         workspace.write_file("task.md", "changed")
 
 
