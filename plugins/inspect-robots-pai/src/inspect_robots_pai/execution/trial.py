@@ -32,6 +32,19 @@ def _load_run(program: Path):
     return module.run
 
 
+def _record_target_vector(trial: Path, result: object) -> None:
+    if not isinstance(result, dict) or "target_vector" not in result:
+        return
+    path = trial / "steps.jsonl"
+    lines = path.read_text(encoding="utf-8").splitlines()
+    if not lines:
+        return
+    row = json.loads(lines[-1])
+    row["target_vector"] = [float(value) for value in result["target_vector"]]
+    lines[-1] = json.dumps(row)
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 def _write_step(trial: Path, view, targets: dict, frame: int) -> None:
     trial.mkdir(parents=True, exist_ok=True)
     for camera, image in view.images.items():
@@ -78,7 +91,9 @@ def run_trial(program, trial_dir, port, wall_s=600, max_actions=80, abort=None):
             _gate()
             _write_step(trial, port.observation(), dict(targets), frame)
             frame += 1
-            return port.move(targets)
+            result = port.move(targets)
+            _record_target_vector(trial, result)
+            return result
 
         def set_gripper(self, side, width):
             _gate()
