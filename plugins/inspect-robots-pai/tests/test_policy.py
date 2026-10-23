@@ -60,14 +60,17 @@ def test_act_interpolates_move_and_then_requests_stop(tmp_path: Path) -> None:
     step = None
     while time.monotonic() < deadline:
         path = trial / "steps.jsonl"
-        if path.is_file() and path.read_text(encoding="utf-8").strip():
-            try:
-                row = json.loads(path.read_text(encoding="utf-8").splitlines()[-1])
-            except json.JSONDecodeError:
-                row = None
-            if row is not None and "target_vector" in row:
-                step = row
-                break
+        if path.is_file():
+            text = path.read_text(encoding="utf-8")
+            lines = [line for line in text.splitlines() if line.strip()]
+            if lines:
+                try:
+                    row = json.loads(lines[-1])
+                except json.JSONDecodeError:
+                    row = None
+                if row is not None and "target_vector" in row:
+                    step = row
+                    break
         time.sleep(0.01)
     assert step is not None
     assert len(step["target_vector"]) == 20
