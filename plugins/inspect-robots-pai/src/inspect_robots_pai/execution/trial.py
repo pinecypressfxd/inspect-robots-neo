@@ -42,7 +42,9 @@ def _record_target_vector(trial: Path, result: object) -> None:
     row = json.loads(lines[-1])
     row["target_vector"] = [float(value) for value in result["target_vector"]]
     lines[-1] = json.dumps(row)
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    temporary = path.with_name(f".{path.name}.tmp")
+    temporary.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    temporary.replace(path)
 
 
 def _write_step(trial: Path, view, targets: dict, frame: int) -> None:
