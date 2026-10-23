@@ -1,0 +1,4 @@
+coder:
+  model: gpt-5-codex
+diagnoser:
+  model: gemini-2.5-pro
