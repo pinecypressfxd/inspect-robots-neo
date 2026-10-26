@@ -57,10 +57,9 @@ class Task:
     ``scorer`` accepts scorer objects or **registry names** (e.g.
     ``scorer="success_at_end"``), or a sequence mixing both.
 
-    Declare at most one rollout horizon. Omit both to run until the policy
-    stops. ``max_steps`` is already resolved; ``max_seconds`` is keyword-only
-    and is resolved against the paired embodiment's positive finite
-    ``control_hz`` by ``eval()``.
+    Declare exactly one rollout horizon. ``max_steps`` is already resolved;
+    ``max_seconds`` is keyword-only and is resolved against the paired
+    embodiment's positive finite ``control_hz`` by ``eval()``.
     """
 
     name: str

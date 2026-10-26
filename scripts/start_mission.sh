@@ -14,7 +14,7 @@ VLA_PY="$VLA_DIR/.venv/bin/python"
 # --- 密钥:把 export JINSHANYUN_CHATGPT_KEY=<key> 写进 ~/.nerorc(chmod 600) ---
 if [ -f "$HOME/.nerorc" ]; then . "$HOME/.nerorc"; fi
 if [ -z "${JINSHANYUN_CHATGPT_KEY:-}" ]; then
-  echo "!! JINSHANYUN_CHATGPT_KEY 未设置:hybrid/agent 运行会在起跑时失败" >&2
+  echo "!! JINSHANYUN_CHATGPT_KEY 未设置:agent/harness 运行会在起跑时失败" >&2
   echo "   编辑 ~/.nerorc 写入 export JINSHANYUN_CHATGPT_KEY=<你的key> 后重跑本脚本" >&2
 fi
 
@@ -65,7 +65,7 @@ else
   up "http://127.0.0.1:8300/" && echo "[ok] http://127.0.0.1:8300/" || echo "[!!] 视图未就绪,查 /tmp/ir-view-8300.log" >&2
 fi
 
-# 3) 任务台 :8400(默认策略 hybrid;页面上可随时切 agent/hybrid/vla)
+# 3) 任务台 :8400(页面上选 agent / harness / vla)
 if up "http://127.0.0.1:8400/"; then
   echo "[ok] 任务台已在 :8400"
 else
@@ -73,7 +73,6 @@ else
   (
     cd "$REPO"
     nohup uv run --no-sync python plugins/inspect-robots-nero/scripts/mission_console.py \
-      --policy hybrid \
       --model mog-10-a \
       --base-url https://kspmas.ksyun.com/v1 \
       --api-key-env JINSHANYUN_CHATGPT_KEY \

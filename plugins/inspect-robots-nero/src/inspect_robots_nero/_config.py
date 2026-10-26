@@ -18,10 +18,42 @@ GRIPPER_INIT_WIDTH_M = 0.09
 HOME_LEFT: tuple[float, ...] = (0.56, 0.92, -1.38, 1.90, -0.46, 0.04, 0.20)
 HOME_RIGHT: tuple[float, ...] = (-0.56, 0.92, 1.38, 1.90, 0.46, -0.04, 0.20)
 
+# One policy waypoint per tick. ``-E control_hz`` is the joint command rate
+# inside that tick (default: one command per waypoint; vla passes 200).
+ACTION_HZ = 30.0
 CONTROL_HZ = 30.0
 RESET_SETTLE_TOL_RAD = 0.05
 RESET_SETTLE_TIMEOUT_S = 10.0
-CAMERA_MAX_AGE_S = 0.5
+# ros2_nero_inference.yaml environment alignment: a camera group older than
+# 100 ms is stale, the three stamps must lie inside 40 ms, and the arm sample
+# must not lag the oldest image by more than 33 ms.
+# ros2_nero_inference.yaml camera.jpeg_quality. Frames are JPEG-compressed
+# at this quality before the model sees them.
+JPEG_QUALITY = 85
+CAMERA_MAX_AGE_S = 0.1
+MAX_IMAGE_TRIPLET_SKEW_S = 0.040
+MAX_ARM_STATE_LAG_S = 0.033
+# ros2_nero_inference.yaml observation_alignment: the environment tolerates
+# alignment failures for 500 ms before aborting (runtime_alignment_failure_timeout_ms).
+ALIGNMENT_FAILURE_TIMEOUT_S = 0.5
+# ros2_nero_inference.yaml camera warmup: wait for 8 frames per stream and
+# 10 consecutive aligned groups before the first inference.
+WARMUP_MIN_FRAMES = 8
+WARMUP_MIN_ALIGNED_GROUPS = 10
+# ros2_nero_inference.yaml environment: left and right arm proprioception
+# must be sampled within 5 ms of each other (max_proprioception_pair_skew_ms).
+MAX_PROPRIOCEPTION_PAIR_SKEW_S = 0.005
+# ProxQP costs and iteration count from the same yaml. Agent and VLA share
+# them; only max_joint_step_rad differs (agent 0.1, vla-only passes 1.0).
+IK_FRAME_POSITION_COST = 1.0
+IK_FRAME_ORIENTATION_COST = 1.0
+IK_POSTURE_COST = 0.001
+IK_DAMPING_COST = 1e-4
+IK_FRAME_LM_DAMPING = 0.0
+IK_MAX_ITERATIONS = 2
+IK_MAX_JOINT_STEP_RAD = 0.1
+IK_TCP_TRANSLATION_M = (0.0, 0.0, 0.18)
+IK_TCP_ROTATION_RPY_RAD = (0.0, -1.5707963267948966, 0.0)
 
 # Firmware per-joint limits (rad), verbatim from pyAgxArm's
 # ROBOT_JOINT_LIMIT_PRESET_RAD["nero"]. The URDF mirrors these EXACTLY, so IK

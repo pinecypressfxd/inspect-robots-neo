@@ -44,6 +44,7 @@ class FakeAgxRobot:
         self.mode: str | None = None
         self.move_js_calls: list[tuple[float, ...]] = []
         self.move_j_calls: list[tuple[float, ...]] = []
+        self.events: list[tuple[object, ...]] = []
         self.damped_stops = 0
         self.motion_resets = 0
         self.effectors: list[FakeEffector] = []
@@ -63,6 +64,7 @@ class FakeAgxRobot:
     def enable(self) -> bool:
         # A refused enable leaves the current state alone (the firmware
         # returns falsy for an already-enabled arm without disabling it).
+        self.events.append(("enable",))
         if self.enable_result:
             self.enabled = True
         return self.enable_result
@@ -75,19 +77,25 @@ class FakeAgxRobot:
         self.damped_stops += 1
 
     def reset(self) -> None:
+        self.events.append(("reset",))
         self.motion_resets += 1
 
     def set_speed_percent(self, percent: int) -> None:
+        self.events.append(("set_speed_percent", int(percent)))
         self.speed = int(percent)
 
     def set_follower_mode(self) -> None:
+        self.events.append(("set_follower_mode",))
         self.mode = "follower"
 
     def set_normal_mode(self) -> None:
+        self.events.append(("set_normal_mode",))
         self.mode = "normal"
 
     def move_j(self, joints: list[float]) -> None:
-        self.move_j_calls.append(tuple(float(value) for value in joints))
+        commanded = tuple(float(value) for value in joints)
+        self.events.append(("move_j", commanded))
+        self.move_j_calls.append(commanded)
         # A firmware-smoothed move lands on its target: adopt it as readback.
         self.angles = tuple(float(value) for value in joints)
 

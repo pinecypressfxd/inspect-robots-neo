@@ -1,0 +1,2553 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Robot ITL Reference Report</title>
+  <script src="/static/plotly.min.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #f6f7f9;
+      color: #17202a;
+    }
+    button, select { font: inherit; }
+    .app { display: flex; min-height: 100vh; }
+    .sidebar {
+      position: sticky;
+      top: 0;
+      width: 260px;
+      height: 100vh;
+      flex: 0 0 260px;
+      overflow: auto;
+      border-right: 1px solid #d8dde2;
+      background: #f1f3f5;
+      padding: 14px;
+    }
+    .field { margin-bottom: 14px; font-size: 13px; }
+    .field label { display: block; font-weight: 650; margin-bottom: 4px; }
+    select { width: 100%; padding: 4px; }
+    .checkbox-label {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      font-weight: 650;
+      cursor: pointer;
+    }
+    .checkbox-label input { margin: 0; }
+    .seg { display: flex; gap: 8px; }
+    .seg button {
+      flex: 1;
+      min-width: 0;
+      padding: 6px 8px;
+      cursor: pointer;
+      border: 1px solid #aeb7c2;
+      background: #fff;
+    }
+    .seg button.active {
+      color: #fff;
+      border-color: #1f77b4;
+      background: #1f77b4;
+    }
+    #refresh {
+      width: 100%;
+      padding: 6px 8px;
+      cursor: pointer;
+      border: 1px solid #aeb7c2;
+      background: #fff;
+    }
+    #status, #warnings {
+      color: #5f6b7a;
+      font-size: 12px;
+      line-height: 1.35;
+      white-space: pre-wrap;
+    }
+    #warnings { color: #b65f17; }
+    .content {
+      flex: 1;
+      min-width: 0;
+      background: #fff;
+    }
+    .report-section {
+      border-bottom: 1px solid #d8dde2;
+      background: #fff;
+    }
+    .section-header {
+      padding: 12px 12px 10px;
+      border-bottom: 1px solid #d8dde2;
+      background: #fff;
+    }
+    .section-header h2 {
+      margin: 0;
+      font-size: 16px;
+      line-height: 1.3;
+    }
+    .section-controls {
+      width: 220px;
+      margin-top: 10px;
+    }
+    .trajectory-controls {
+      display: flex;
+      width: auto;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 12px;
+    }
+    .trajectory-controls .seg { width: 220px; }
+    .trajectory-controls .checkbox-label {
+      margin: 0;
+      font-size: 13px;
+      font-weight: 500;
+    }
+    .page-plot {
+      height: calc(100vh - 78px);
+      min-height: 650px;
+      padding: 8px 10px;
+      background: #fff;
+    }
+    .plot-scroll {
+      width: 100%;
+      height: 100%;
+      overflow: auto;
+    }
+    #main-plot {
+      position: relative;
+      width: 100%;
+      min-width: 1120px;
+      height: 100%;
+    }
+    .ik-section {
+      padding: 0 10px 10px;
+      background: #f6f7f9;
+    }
+    .recorder-section,
+    .env-loop-section {
+      padding: 0 10px 10px;
+      background: #f6f7f9;
+    }
+    .recorder-section .section-header,
+    .env-loop-section .section-header {
+      margin: 0 -10px 10px;
+      background: #f6f7f9;
+    }
+    .ik-section .section-header {
+      margin: 0 -10px 10px;
+      background: #f6f7f9;
+    }
+    .ik-summary,
+    .recorder-summary,
+    .env-loop-summary {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+    .recorder-summary {
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+    }
+    .recorder-details {
+      display: grid;
+      gap: 10px;
+    }
+    .recorder-detail-group {
+      min-width: 0;
+      border: 1px solid #d7dce2;
+      background: #fff;
+    }
+    .recorder-detail-group > summary {
+      padding: 9px 10px;
+      color: #435061;
+      font-size: 12px;
+      font-weight: 650;
+      cursor: pointer;
+      user-select: none;
+    }
+    .recorder-detail-group[open] > summary {
+      border-bottom: 1px solid #d7dce2;
+    }
+    .recorder-detail-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+      padding: 10px;
+      background: #f6f7f9;
+    }
+    .recorder-detail-card {
+      min-width: 0;
+      border: 1px solid #d7dce2;
+      background: #fff;
+    }
+    .recorder-detail-card.camera-details,
+    .recorder-detail-card.telemetry-details {
+      grid-column: 1 / -1;
+    }
+    .recorder-detail-body {
+      padding: 0 10px 10px;
+      color: #5f6b7a;
+      font-size: 12px;
+      line-height: 1.4;
+      white-space: pre-wrap;
+    }
+    .summary-card {
+      min-width: 0;
+      border: 1px solid #d7dce2;
+      background: #fff;
+      padding: 9px 10px;
+    }
+    .summary-card.state-good { border-left: 3px solid #3b9b62; }
+    .summary-card.state-warning { border-left: 3px solid #d99524; }
+    .summary-card.state-error { border-left: 3px solid #c94c4c; }
+    .summary-card .label {
+      color: #5f6b7a;
+      font-size: 12px;
+      line-height: 1.25;
+    }
+    .summary-card .value {
+      margin-top: 3px;
+      font-size: 13px;
+      font-weight: 650;
+      line-height: 1.3;
+      white-space: pre-line;
+      overflow-wrap: anywhere;
+    }
+    .summary-card .meta {
+      margin-top: 2px;
+      color: #7c8794;
+      font-size: 11px;
+      line-height: 1.25;
+      overflow-wrap: anywhere;
+    }
+    .env-loop-empty {
+      margin-bottom: 10px;
+      border: 1px solid #d7dce2;
+      background: #fff;
+      color: #5f6b7a;
+      padding: 12px;
+      font-size: 13px;
+      line-height: 1.35;
+    }
+    .env-loop-empty[hidden] { display: none; }
+    .env-loop-chart-grid {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+    .env-loop-card {
+      min-width: 0;
+      border: 1px solid #d7dce2;
+      background: #fff;
+    }
+    .env-loop-card-label {
+      padding: 9px 10px 0;
+      color: #17202a;
+      text-align: left;
+      font-size: 13px;
+      font-weight: 650;
+      line-height: 1.25;
+    }
+    .env-loop-chart {
+      width: 100%;
+      height: 180px;
+      min-width: 0;
+    }
+    .env-loop-lower {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+    .env-loop-table-card,
+    .env-loop-warnings {
+      min-width: 0;
+      border: 1px solid #d7dce2;
+      background: #fff;
+    }
+    .env-loop-table-wrap {
+      overflow-x: auto;
+      padding: 0 10px 10px;
+    }
+    .env-loop-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+      line-height: 1.35;
+    }
+    .env-loop-table th,
+    .env-loop-table td {
+      padding: 6px 7px;
+      border-bottom: 1px solid #edf0f3;
+      text-align: right;
+      white-space: nowrap;
+    }
+    .env-loop-table th:first-child,
+    .env-loop-table td:first-child {
+      text-align: left;
+      white-space: normal;
+    }
+    #recorder-lerobot-table th,
+    #recorder-lerobot-table td {
+      text-align: left;
+    }
+    .env-loop-table th {
+      color: #5f6b7a;
+      font-weight: 650;
+    }
+    .env-loop-warnings {
+      grid-column: 1 / -1;
+      padding: 9px 10px;
+      color: #b65f17;
+      font-size: 12px;
+      line-height: 1.35;
+      white-space: pre-wrap;
+    }
+    .env-loop-warnings[hidden] { display: none; }
+    .ik-compact-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+    .ik-compact-card {
+      min-width: 0;
+      border: 1px solid #d7dce2;
+      background: #fff;
+    }
+    .ik-compact-label {
+      padding: 9px 10px 0;
+      color: #17202a;
+      text-align: left;
+      font-size: 13px;
+      font-weight: 650;
+      line-height: 1.25;
+    }
+    .ik-compact-chart {
+      width: 100%;
+      height: 178px;
+      min-width: 0;
+    }
+    .metric-row {
+      position: relative;
+      display: grid;
+      grid-template-columns: minmax(118px, 150px) minmax(760px, 1fr);
+      min-height: 210px;
+      margin-bottom: 10px;
+      border: 1px solid #d7dce2;
+      background: #fff;
+    }
+    .metric-label {
+      display: flex;
+      align-items: center;
+      justify-content: flex-start;
+      padding: 10px 12px;
+      border-right: 1px solid #edf0f3;
+      text-align: left;
+      font-size: 13px;
+      font-weight: 650;
+      line-height: 1.25;
+      overflow-wrap: anywhere;
+    }
+    .metric-label span { display: block; }
+    .ik-chart {
+      position: relative;
+      width: 100%;
+      height: 210px;
+      min-width: 0;
+    }
+    .subplot-expanders {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      z-index: 8;
+    }
+    .subplot-expand {
+      position: absolute;
+      width: 22px;
+      height: 22px;
+      padding: 0;
+      border: 1px solid #aeb7c2;
+      border-radius: 3px;
+      background: rgba(255, 255, 255, 0.9);
+      color: #17202a;
+      line-height: 20px;
+      pointer-events: auto;
+      cursor: pointer;
+    }
+    .subplot-expand:hover {
+      border-color: #1f77b4;
+      color: #1f77b4;
+    }
+    body.modal-open { overflow: hidden; }
+    .modal[hidden] { display: none; }
+    .modal {
+      position: fixed;
+      inset: 0;
+      z-index: 50;
+    }
+    .modal-backdrop {
+      position: absolute;
+      inset: 0;
+      background: rgba(23, 32, 42, 0.52);
+    }
+    .modal-panel {
+      position: absolute;
+      inset: 28px;
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      min-height: 0;
+      border: 1px solid #aeb7c2;
+      background: #fff;
+      box-shadow: 0 16px 42px rgba(23, 32, 42, 0.28);
+    }
+    .modal-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 10px;
+      border-bottom: 1px solid #d8dde2;
+    }
+    .modal-header h2 {
+      flex: 1;
+      min-width: 0;
+      margin: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 15px;
+    }
+    .modal-header button {
+      padding: 5px 9px;
+      border: 1px solid #aeb7c2;
+      background: #fff;
+      cursor: pointer;
+    }
+    #modal-plot {
+      flex: 1;
+      min-width: 0;
+      min-height: 0;
+    }
+    @media (max-width: 860px) {
+      .app { display: block; }
+      .sidebar {
+        position: static;
+        width: 100%;
+        height: auto;
+        border-right: 0;
+        border-bottom: 1px solid #d8dde2;
+      }
+      .page-plot { height: 82vh; }
+      .section-controls { width: 100%; max-width: 260px; }
+      .ik-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .recorder-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .env-loop-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .env-loop-chart-grid { grid-template-columns: 1fr; }
+      .env-loop-lower { grid-template-columns: 1fr; }
+      .ik-compact-grid { grid-template-columns: 1fr; }
+      .metric-row { grid-template-columns: 1fr; }
+      .metric-label {
+        border-right: 0;
+        border-bottom: 1px solid #edf0f3;
+      }
+      .ik-chart { min-width: 760px; }
+      .modal-panel { inset: 10px; }
+    }
+  </style>
+</head>
+<body>
+<div class="app">
+  <aside class="sidebar">
+    <div class="field">
+      <label for="episode">Episode</label>
+      <select id="episode" multiple size="8"></select>
+    </div>
+    <div class="field">
+      <label for="focus-episode">Focus</label>
+      <select id="focus-episode"></select>
+    </div>
+    <div class="field">
+      <label class="checkbox-label">
+        <input id="show-all" type="checkbox">
+        <span>Show all</span>
+      </label>
+    </div>
+    <div class="field">
+      <button id="refresh" type="button">Refresh</button>
+    </div>
+    <div class="field">
+      <label>Status</label>
+      <div id="status"></div>
+    </div>
+    <div class="field">
+      <label>Warnings</label>
+      <div id="warnings"></div>
+    </div>
+  </aside>
+  <main class="content">
+    <section id="recorder-section" class="report-section recorder-section" hidden>
+      <header class="section-header">
+        <h2>Recorder</h2>
+      </header>
+      <div id="recorder-empty" class="env-loop-empty" hidden></div>
+      <div id="recorder-summary" class="recorder-summary"></div>
+      <div class="recorder-details">
+        <details id="recorder-raw-details" class="recorder-detail-group">
+          <summary>Raw verification details</summary>
+          <div class="recorder-detail-grid">
+            <div class="recorder-detail-card telemetry-details">
+              <div class="env-loop-card-label">Raw evidence overview</div>
+              <div id="recorder-raw-overview-table" class="env-loop-table-wrap"></div>
+            </div>
+            <div class="recorder-detail-card camera-details">
+              <div class="env-loop-card-label">Raw camera details</div>
+              <div id="recorder-camera-table" class="env-loop-table-wrap"></div>
+            </div>
+            <div class="recorder-detail-card">
+              <div class="env-loop-card-label">Raw robot-state details</div>
+              <div id="recorder-robot-state-table" class="env-loop-table-wrap"></div>
+            </div>
+            <div class="recorder-detail-card">
+              <div class="env-loop-card-label">Verification diagnostics</div>
+              <div id="recorder-diagnostics" class="recorder-detail-body"></div>
+            </div>
+          </div>
+        </details>
+        <details id="recorder-lerobot-details" class="recorder-detail-group">
+          <summary>LeRobot conversion details</summary>
+          <div id="recorder-lerobot-table" class="env-loop-table-wrap"></div>
+        </details>
+        <details id="recorder-telemetry-details" class="recorder-detail-group">
+          <summary>Recorder telemetry</summary>
+          <div id="recorder-telemetry-table" class="env-loop-table-wrap"></div>
+        </details>
+      </div>
+    </section>
+    <section id="env-loop-section" class="report-section env-loop-section">
+      <header class="section-header">
+        <h2>Env Loop 实时监控</h2>
+      </header>
+      <div id="env-loop-empty" class="env-loop-empty" hidden></div>
+      <div id="env-loop-summary" class="env-loop-summary"></div>
+      <div id="env-loop-charts" class="env-loop-chart-grid"></div>
+      <div class="env-loop-lower">
+        <div class="env-loop-table-card">
+          <div class="env-loop-card-label">Metric stats</div>
+          <div id="env-loop-stats-table" class="env-loop-table-wrap"></div>
+        </div>
+        <div class="env-loop-table-card">
+          <div class="env-loop-card-label">Timing stats</div>
+          <div id="env-loop-timing-stats-table" class="env-loop-table-wrap"></div>
+        </div>
+        <div id="env-loop-warnings" class="env-loop-warnings" hidden></div>
+      </div>
+    </section>
+    <section class="report-section trajectory-section">
+      <header class="section-header">
+        <h2>控制器有效目标、下发轨迹、机器人实际执行轨迹</h2>
+        <div class="section-controls trajectory-controls">
+          <div class="seg">
+            <button id="mode-pose" class="active" data-mode="pose" type="button">位姿</button>
+            <button id="mode-joint" data-mode="joint" type="button">关节</button>
+          </div>
+          <label id="planner-chunk-control" class="checkbox-label">
+            <input id="show-planner-chunks" type="checkbox">
+            <span>显示 Planner 分块预测</span>
+          </label>
+          <input type="hidden" id="view-mode" value="pose">
+        </div>
+      </header>
+      <div class="page-plot">
+        <div class="plot-scroll"><div id="main-plot"></div></div>
+      </div>
+    </section>
+    <section class="report-section ik-section">
+      <header class="section-header">
+        <h2>IK 指标</h2>
+      </header>
+      <div id="ik-summary" class="ik-summary"></div>
+      <div id="ik-compact-plots" class="ik-compact-grid"></div>
+      <div id="ik-plots"></div>
+    </section>
+  </main>
+</div>
+<div id="plot-modal" class="modal" hidden>
+  <div class="modal-backdrop" data-close-modal></div>
+  <div class="modal-panel" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+    <div class="modal-header">
+      <h2 id="modal-title"></h2>
+      <button id="modal-reset" type="button">Reset</button>
+      <button id="modal-close" type="button" aria-label="Close">x</button>
+    </div>
+    <div id="modal-plot"></div>
+  </div>
+</div>
+<script>
+const el = (id) => document.getElementById(id);
+const SIDES = [
+  { key: "left", label: "Left", short: "L" },
+  { key: "right", label: "Right", short: "R" },
+];
+const COLORS = {
+  planner_chunk: "#1f77b4",
+  ik_target: "#2ca02c",
+  joint_target_fk: "#9467bd",
+  robot: "#d95f02",
+  target: "#9467bd",
+  current: "#d95f02",
+  joint_jump: "#D62728",
+};
+const SERIES_LABELS = {
+  planner_chunk: "Planner 分块预测",
+  ik_target: "控制器有效目标",
+  joint_target_fk: "下发轨迹",
+  robot: "实际执行",
+  target: "下发目标",
+  current: "实际执行",
+  joint_jump: "关节跳变",
+};
+const IK_SERIES_COLORS = ["#1f77b4", "#d62728", "#2ca02c", "#9467bd"];
+const IK_SIDE_COLORS = {
+  left: "#1f77b4",
+  right: "#d62728",
+};
+const IK_COMPACT_SERIES_DASHES = ["solid", "dot", "dashdot", "longdash"];
+const IK_DIMENSION_LABELS = {
+  duration_ms: "IK duration (ms)",
+  iteration_count: "IK iterations",
+  position_error_m: "IK position error (m)",
+  orientation_error_rad: "IK orientation error (rad)",
+  position_target_margin_m: "IK position error minus tolerance (m)",
+  orientation_target_margin_rad: "IK orientation error minus tolerance (rad)",
+  joint_delta_rad: "IK joint delta / step limit (rad)",
+  joint_jump: "Controller joint jump (rad)",
+};
+const IK_COMPACT_DIMENSION_KEYS = ["duration_ms", "iteration_count", "joint_jump"];
+const IK_SHARED_DIMENSION_KEYS = ["duration_ms", "iteration_count", "joint_jump"];
+const ENV_LOOP_CHARTS = [
+  {
+    label: "Env loop (Hz)",
+    series: [{ key: "env_loop_hz", label: "env_loop_hz", color: "#2563eb" }],
+    targetMetric: "env_loop_hz",
+  },
+  {
+    label: "Command publish (Hz)",
+    series: [
+      { key: "left_arm_command_publish_hz", label: "left", color: "#2563eb" },
+      { key: "right_arm_command_publish_hz", label: "right", color: "#07867b" },
+      { key: "gripper_command_publish_hz", label: "gripper", color: "#c76a00" },
+    ],
+  },
+  {
+    label: "Aligned obs (Hz)",
+    series: [{ key: "aligned_obs_hz", label: "aligned_obs_hz", color: "#07867b" }],
+    targetMetric: "aligned_obs_hz",
+  },
+  {
+    label: "Observation timing (ms)",
+    series: [
+      { key: "group_span_ms", label: "group span", color: "#7c3aed" },
+      { key: "robot_state_age_ms", label: "robot state age", color: "#c76a00" },
+    ],
+    thresholds: [
+      { value: 15, label: "15ms image" },
+      { value: 20, label: "20ms joint" },
+    ],
+  },
+  {
+    label: "Obs -> Request (ms)",
+    series: [{ key: "obs_to_request_ms", label: "obs_to_request_ms", color: "#2563eb" }],
+    targetMetric: "obs_to_request_ms",
+  },
+  {
+    label: "Remote model (ms)",
+    series: [{ key: "remote_model_latency_ms", label: "remote_model_latency_ms", color: "#7c3aed" }],
+  },
+  {
+    label: "Communication (ms)",
+    series: [{ key: "communication_latency_ms", label: "communication_latency_ms", color: "#c76a00" }],
+  },
+  {
+    label: "Planner trajectory (Hz)",
+    series: [
+      { key: "planner_trajectory_hz", label: "trajectory", color: "#07867b" },
+      { key: "planner_request_hz", label: "request", color: "#7c3aed" },
+    ],
+    targetMetric: "planner_trajectory_hz",
+  },
+];
+const ENV_LOOP_METRICS = [
+  { key: "env_loop_hz", label: "Env loop (Hz)", direction: "max" },
+  { key: "left_arm_command_publish_hz", label: "Left command publish (Hz)", direction: "max" },
+  { key: "right_arm_command_publish_hz", label: "Right command publish (Hz)", direction: "max" },
+  { key: "gripper_command_publish_hz", label: "Gripper command publish (Hz)", direction: "max" },
+  { key: "aligned_obs_hz", label: "Aligned obs (Hz)", direction: "max" },
+  { key: "group_span_ms", label: "Camera group span (ms)", direction: "min" },
+  { key: "robot_state_age_ms", label: "Robot state age (ms)", direction: "min" },
+  { key: "obs_to_request_ms", label: "Obs -> Request (ms)", direction: "min" },
+  { key: "remote_model_latency_ms", label: "Remote model (ms)", direction: "min" },
+  { key: "communication_latency_ms", label: "Communication (ms)", direction: "min" },
+  { key: "planner_trajectory_hz", label: "Planner trajectory (Hz)", direction: "max" },
+];
+const ENV_LOOP_TIMING_METRICS = [
+  { key: "arm_read_ms", label: "arm_read_ms" },
+  { key: "camera_read_ms", label: "camera_read_ms" },
+  { key: "arm_move_j_ms", label: "arm_move_j_ms" },
+  { key: "gripper_move_ms", label: "gripper_move_ms" },
+  { key: "telemetry_publish_ms", label: "telemetry_publish_ms" },
+  { key: "sleep_wake_delay_ms", label: "sleep_wake_delay_ms" },
+  { key: "loop_start_late_ms", label: "loop_start_late_ms" },
+  { key: "proprioception_callback_max_ms", label: "aligned joint obs callback max_ms" },
+  { key: "aligned_observation_callback_max_ms", label: "aligned obs callback max_ms" },
+];
+const ENV_LOOP_STAT_COLUMNS = ["mean", "p50", "p95", "p99", "min", "max", "target", "breach_rate"];
+const ENV_LOOP_TIMING_STAT_COLUMNS = ["mean", "p50", "p95", "p99", "max"];
+const ENV_LOOP_STAT_LABELS = {
+  mean: "mean",
+  p50: "p50",
+  p95: "p95",
+  p99: "p99",
+  min: "min",
+  max: "max",
+  target: "target",
+  breach_rate: "breach rate",
+};
+const DASHES = ["solid", "dash", "dot", "dashdot", "longdash"];
+const POSE_CELLS = [
+  { side: "left", key: "x", label: "Left x" },
+  { side: "left", key: "roll", label: "Left roll" },
+  { side: "right", key: "x", label: "Right x" },
+  { side: "right", key: "roll", label: "Right roll" },
+  { side: "left", key: "y", label: "Left y" },
+  { side: "left", key: "pitch", label: "Left pitch" },
+  { side: "right", key: "y", label: "Right y" },
+  { side: "right", key: "pitch", label: "Right pitch" },
+  { side: "left", key: "z", label: "Left z" },
+  { side: "left", key: "yaw", label: "Left yaw" },
+  { side: "right", key: "z", label: "Right z" },
+  { side: "right", key: "yaw", label: "Right yaw" },
+];
+const JOINT_KEY_ORDER = [
+  "joint1",
+  "joint2",
+  "joint3",
+  "joint4",
+  "joint5",
+  "joint6",
+  "joint7",
+  "gripper",
+];
+const state = {
+  mainPayloads: null,
+  ikPayloads: null,
+  envLoopPayload: null,
+};
+const expandablePlots = new Map();
+
+async function fetchJson(url, options = undefined) {
+  const response = await fetch(url, options);
+  const body = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(body.error || response.statusText);
+  }
+  return body;
+}
+
+async function loadEpisodes() {
+  const previous = new Set(selectedEpisodes());
+  const payload = await fetchJson("/api/episodes");
+  const episodeSelect = el("episode");
+  episodeSelect.replaceChildren();
+  for (const [index, name] of payload.episodes.entries()) {
+    const option = document.createElement("option");
+    option.value = name;
+    option.textContent = name;
+    option.selected = previous.size ? previous.has(name) : index === 0;
+    episodeSelect.appendChild(option);
+  }
+  if (!episodeSelect.selectedOptions.length && episodeSelect.options.length) {
+    episodeSelect.options[0].selected = true;
+  }
+  syncFocusOptions();
+}
+
+function selectedEpisodes() {
+  const selected = Array.from(el("episode").selectedOptions).map((option) => option.value);
+  if (selected.length) return selected;
+  const value = el("episode").value;
+  return value ? [value] : [];
+}
+
+function syncFocusOptions() {
+  const selected = selectedEpisodes();
+  const focusSelect = el("focus-episode");
+  const previous = focusSelect.value;
+  focusSelect.replaceChildren();
+  for (const episode of selected) {
+    const option = document.createElement("option");
+    option.value = episode;
+    option.textContent = episode;
+    option.selected = previous ? previous === episode : episode === selected[0];
+    focusSelect.appendChild(option);
+  }
+  if (!focusSelect.selectedOptions.length && focusSelect.options.length) {
+    focusSelect.options[0].selected = true;
+  }
+}
+
+function focusEpisode() {
+  return el("focus-episode").value || selectedEpisodes()[0] || "";
+}
+
+function showAllEpisodes() {
+  return el("show-all").checked;
+}
+
+function displayedEpisodes() {
+  const selected = selectedEpisodes();
+  if (!selected.length) return [];
+  if (showAllEpisodes()) return selected;
+  const focused = focusEpisode();
+  return focused ? [focused] : selected.slice(0, 1);
+}
+
+async function ensureDisplayedEpisodesVerified(episodes) {
+  await Promise.all(episodes.map((episode) => {
+    const query = new URLSearchParams({ episode });
+    return fetchJson(
+      `/api/ensure_verification?${query.toString()}`,
+      { method: "POST" },
+    );
+  }));
+}
+
+async function ensureDisplayedEpisodesPrechecked(episodes) {
+  await Promise.all(episodes.map((episode) => {
+    const query = new URLSearchParams({ episode });
+    return fetchJson(
+      `/api/ensure_lerobot_precheck?${query.toString()}`,
+      { method: "POST" },
+    );
+  }));
+}
+
+function episodeViews(payload) {
+  return payload.episode_views || [payload];
+}
+
+function axisName(index) {
+  return index === 0 ? "" : String(index + 1);
+}
+
+function axisRef(index, axis) {
+  return `${axis}${axisName(index)} domain`;
+}
+
+function cellAxis(index) {
+  const suffix = axisName(index);
+  return { xaxis: "x" + suffix, yaxis: "y" + suffix };
+}
+
+function queryFor(side) {
+  return new URLSearchParams({
+    episodes: displayedEpisodes().join(","),
+    effector: side,
+  });
+}
+
+async function fetchSides(endpoint) {
+  const entries = await Promise.all(SIDES.map(async (side) => ({
+    side: side.key,
+    label: side.label,
+    payload: await fetchJson(`${endpoint}?${queryFor(side.key).toString()}`),
+  })));
+  return Object.fromEntries(entries.map((entry) => [entry.side, entry]));
+}
+
+function dimensionByKey(view, key) {
+  return (view.dimensions || []).find((dimension) => dimension.key === key);
+}
+
+function orderedJointDimensions(view) {
+  const byKey = new Map(
+    (view.dimensions || []).map((dimension) => [dimension.key, dimension]),
+  );
+  return JOINT_KEY_ORDER.map((key) => byKey.get(key)).filter(Boolean);
+}
+
+function traceMode(series) {
+  return series.times && series.times.length === 1 ? "lines+markers" : "lines";
+}
+
+function seriesDisplayName(seriesName) {
+  return SERIES_LABELS[seriesName] || seriesName;
+}
+
+function episodeStyle(episodeName, episodeIndex) {
+  const renderedEpisodes = displayedEpisodes();
+  const focused = focusEpisode();
+  const isFocused = episodeName && focused && episodeName === focused;
+  const dimUnfocused = (
+    showAllEpisodes()
+    && renderedEpisodes.length > 1
+    && focused
+    && episodeName
+    && episodeName !== focused
+  );
+  return {
+    dash: DASHES[episodeIndex % DASHES.length],
+    width: isFocused && renderedEpisodes.length > 1 ? 2.3 : 1.6,
+    opacity: dimUnfocused ? 0.42 : 1,
+  };
+}
+
+function consumeLegend(legendTracker, legendKey) {
+  if (legendTracker.has(legendKey)) return false;
+  legendTracker.add(legendKey);
+  return true;
+}
+
+function xyHoverTemplate() {
+  return "x=%{x:.6g}<br>y=%{y:.6g}<extra></extra>";
+}
+
+function traceHoverLabel(color) {
+  return {
+    bgcolor: color,
+    font: { color: "#ffffff" },
+  };
+}
+
+function traceFor(
+  dimension,
+  seriesName,
+  axisIndex,
+  side,
+  episodeName,
+  episodeIndex,
+  legendTracker,
+) {
+  const series = dimension[seriesName] || { times: [], values: [] };
+  const traceName = seriesDisplayName(seriesName);
+  const hasData = series.times && series.times.length;
+  const style = episodeStyle(episodeName, episodeIndex);
+  const traceColor = COLORS[seriesName];
+  return {
+    x: series.times,
+    y: series.values,
+    mode: traceMode(series),
+    type: "scatter",
+    name: traceName,
+    legendgroup: seriesName,
+    showlegend: hasData ? consumeLegend(legendTracker, seriesName) : false,
+    opacity: style.opacity,
+    line: {
+      color: traceColor,
+      width: style.width,
+      dash: style.dash,
+    },
+    marker: { color: traceColor, size: 7 },
+    hoverlabel: traceHoverLabel(traceColor),
+    meta: { episode: episodeName || "", side, series: traceName },
+    ...cellAxis(axisIndex),
+    hovertemplate: xyHoverTemplate(),
+  };
+}
+
+function plannerChunkTraceFor(
+  chunk,
+  axisIndex,
+  side,
+  episodeName,
+  episodeIndex,
+  legendTracker,
+) {
+  const traceName = seriesDisplayName("planner_chunk");
+  const style = episodeStyle(episodeName, episodeIndex);
+  const traceColor = COLORS.planner_chunk;
+  const requestId = chunk.request_id ?? "legacy";
+  return {
+    x: chunk.times || [],
+    y: chunk.values || [],
+    customdata: (chunk.times || []).map(() => requestId),
+    mode: traceMode(chunk),
+    type: "scatter",
+    name: traceName,
+    legendgroup: "planner_chunk",
+    showlegend: consumeLegend(legendTracker, "planner_chunk"),
+    opacity: 0.24 * style.opacity,
+    line: {
+      color: traceColor,
+      width: 1,
+      dash: style.dash,
+    },
+    marker: { color: traceColor, size: 5 },
+    hoverlabel: traceHoverLabel(traceColor),
+    meta: { episode: episodeName || "", side, series: traceName },
+    ...cellAxis(axisIndex),
+    hovertemplate: "request=%{customdata}<br>t=%{x:.6g}<br>value=%{y:.6g}<extra></extra>",
+  };
+}
+
+function jointJumpTraceFor(
+  dimension,
+  axisIndex,
+  side,
+  episodeName,
+  episodeIndex,
+  legendTracker,
+) {
+  const series = dimension.joint_jump || { times: [], values: [], max_deltas: [] };
+  if (!series.times || !series.times.length) return null;
+  const traceName = seriesDisplayName("joint_jump");
+  const style = episodeStyle(episodeName, episodeIndex);
+  const traceColor = COLORS.joint_jump;
+  return {
+    x: series.times,
+    y: series.values,
+    customdata: series.max_deltas || [],
+    mode: "markers",
+    type: "scatter",
+    name: traceName,
+    legendgroup: "joint_jump",
+    showlegend: consumeLegend(legendTracker, "joint_jump"),
+    opacity: style.opacity,
+    marker: {
+      color: traceColor,
+      size: episodeName === focusEpisode() && displayedEpisodes().length > 1 ? 10 : 8,
+      symbol: "circle",
+    },
+    hoverlabel: traceHoverLabel(traceColor),
+    meta: { episode: episodeName || "", side, series: traceName },
+    ...cellAxis(axisIndex),
+    hovertemplate: xyHoverTemplate(),
+  };
+}
+
+function buildPoseTraces(sidePayloads, axisCounts) {
+  const traces = [];
+  const legendTracker = new Set();
+  for (const [axisIndex, cell] of POSE_CELLS.entries()) {
+    const sideEntry = sidePayloads[cell.side];
+    if (!sideEntry) continue;
+    for (const [episodeIndex, episodeView] of episodeViews(sideEntry.payload).entries()) {
+      const dimension = dimensionByKey(episodeView, cell.key);
+      if (!dimension) continue;
+      if (el("show-planner-chunks").checked) {
+        for (const chunk of dimension.planner_chunks || []) {
+          const trace = plannerChunkTraceFor(
+            chunk,
+            axisIndex,
+            sideEntry.label,
+            episodeView.episode,
+            episodeIndex,
+            legendTracker,
+          );
+          if (trace.x && trace.x.length) axisCounts[axisIndex] += 1;
+          traces.push(trace);
+        }
+      }
+      for (const seriesName of ["ik_target", "joint_target_fk", "robot"]) {
+        const trace = traceFor(
+          dimension,
+          seriesName,
+          axisIndex,
+          sideEntry.label,
+          episodeView.episode,
+          episodeIndex,
+          legendTracker,
+        );
+        if (trace.x && trace.x.length) axisCounts[axisIndex] += 1;
+        traces.push(trace);
+      }
+      const markerTrace = jointJumpTraceFor(
+        dimension,
+        axisIndex,
+        sideEntry.label,
+        episodeView.episode,
+        episodeIndex,
+        legendTracker,
+      );
+      if (markerTrace) {
+        axisCounts[axisIndex] += 1;
+        traces.push(markerTrace);
+      }
+    }
+  }
+  return traces;
+}
+
+function buildPoseLayout(axisCounts) {
+  const layout = baseGridLayout(3, 4, {
+    l: 54,
+    r: 16,
+    t: 52,
+    b: 36,
+  });
+  layout.legend = { orientation: "h", y: 1.08 };
+  layout.shapes = dividerShapes();
+  layout.annotations = [
+    columnTitle("Left xyz", 0.10),
+    columnTitle("Left rpy", 0.365),
+    columnTitle("Right xyz", 0.635),
+    columnTitle("Right rpy", 0.90),
+    ...emptyAnnotations(axisCounts, POSE_CELLS.map((cell) => cell.label)),
+  ];
+  for (const [axisIndex, cell] of POSE_CELLS.entries()) {
+    const suffix = axisName(axisIndex);
+    layout["xaxis" + suffix] = xAxis(axisIndex >= 8, axisIndex);
+    layout["yaxis" + suffix] = {
+      title: cell.key,
+      automargin: true,
+      zeroline: false,
+    };
+  }
+  return layout;
+}
+
+function buildJointTraces(sidePayloads, axisCounts) {
+  const traces = [];
+  const legendTracker = new Set();
+  for (const [sideColumn, side] of SIDES.entries()) {
+    const sideEntry = sidePayloads[side.key];
+    if (!sideEntry) continue;
+    for (const [episodeIndex, episodeView] of episodeViews(sideEntry.payload).entries()) {
+      for (const [jointIndex, dimension] of orderedJointDimensions(episodeView).entries()) {
+        const axisIndex = jointIndex * 2 + sideColumn;
+        for (const seriesName of ["target", "current"]) {
+          const trace = traceFor(
+            dimension,
+            seriesName,
+            axisIndex,
+            side.label,
+            episodeView.episode,
+            episodeIndex,
+            legendTracker,
+          );
+          if (trace.x && trace.x.length) axisCounts[axisIndex] += 1;
+          traces.push(trace);
+        }
+        const markerTrace = jointJumpTraceFor(
+          dimension,
+          axisIndex,
+          side.label,
+          episodeView.episode,
+          episodeIndex,
+          legendTracker,
+        );
+        if (markerTrace) {
+          axisCounts[axisIndex] += 1;
+          traces.push(markerTrace);
+        }
+      }
+    }
+  }
+  return traces;
+}
+
+function buildJointLayout(axisCounts) {
+  const labels = jointAxisLabels();
+  const layout = baseGridLayout(JOINT_KEY_ORDER.length, 2, {
+    l: 70,
+    r: 18,
+    t: 46,
+    b: 34,
+  });
+  layout.legend = { orientation: "h", y: 1.035 };
+  layout.shapes = dividerShapes();
+  layout.annotations = [
+    columnTitle("Left joints", 0.235),
+    columnTitle("Right joints", 0.765),
+    ...emptyAnnotations(axisCounts, labels),
+  ];
+  for (let axisIndex = 0; axisIndex < JOINT_KEY_ORDER.length * 2; axisIndex += 1) {
+    const key = JOINT_KEY_ORDER[Math.floor(axisIndex / 2)];
+    const suffix = axisName(axisIndex);
+    layout["xaxis" + suffix] = xAxis(
+      axisIndex >= (JOINT_KEY_ORDER.length - 1) * 2,
+      axisIndex,
+    );
+    layout["yaxis" + suffix] = {
+      title: key,
+      automargin: true,
+      zeroline: false,
+    };
+  }
+  return layout;
+}
+
+function jointAxisLabels() {
+  const labels = [];
+  for (const key of JOINT_KEY_ORDER) {
+    labels.push(`Left ${key}`, `Right ${key}`);
+  }
+  return labels;
+}
+
+function baseGridLayout(rows, columns, margin) {
+  return {
+    grid: { rows, columns, pattern: "independent" },
+    margin,
+    hovermode: "closest",
+    uirevision: "reference-report",
+    paper_bgcolor: "#ffffff",
+    plot_bgcolor: "#ffffff",
+  };
+}
+
+function dividerShapes() {
+  return [{
+    type: "line",
+    xref: "paper",
+    yref: "paper",
+    x0: 0.5,
+    x1: 0.5,
+    y0: 0,
+    y1: 1,
+    line: { color: "#d8dde2", width: 1 },
+  }];
+}
+
+function xAxis(showTitle, axisIndex = 0) {
+  const axis = {
+    title: showTitle ? "time (s)" : "",
+    automargin: true,
+    showticklabels: showTitle,
+  };
+  if (axisIndex > 0) {
+    axis.matches = "x";
+  }
+  return axis;
+}
+
+function columnTitle(text, x) {
+  return {
+    text,
+    x,
+    y: 1.055,
+    xref: "paper",
+    yref: "paper",
+    showarrow: false,
+    font: { size: 12, color: "#17202a" },
+  };
+}
+
+function emptyAnnotations(axisCounts, labels) {
+  return axisCounts.flatMap((count, axisIndex) => {
+    if (count > 0) return [];
+    return [{
+      text: `${labels[axisIndex]} no data`,
+      x: 0.5,
+      y: 0.5,
+      xref: axisRef(axisIndex, "x"),
+      yref: axisRef(axisIndex, "y"),
+      showarrow: false,
+      font: { size: 11, color: "#7c8794" },
+    }];
+  });
+}
+
+async function renderMainPlot() {
+  const mode = el("view-mode").value;
+  const endpoint = mode === "joint" ? "/api/joint_compare" : "/api/pose_compare";
+  const sidePayloads = await fetchSides(endpoint);
+  const axisCount = mode === "joint" ? JOINT_KEY_ORDER.length * 2 : POSE_CELLS.length;
+  const axisCounts = Array(axisCount).fill(0);
+  const traces = mode === "joint"
+    ? buildJointTraces(sidePayloads, axisCounts)
+    : buildPoseTraces(sidePayloads, axisCounts);
+  const layout = mode === "joint"
+    ? buildJointLayout(axisCounts)
+    : buildPoseLayout(axisCounts);
+  const axisLabels = mode === "joint"
+    ? jointAxisLabels()
+    : POSE_CELLS.map((cell) => cell.label);
+  const plot = el("main-plot");
+  await Plotly.react(plot, traces, layout, plotlyConfig());
+  installSubplotExpanders(plot, axisLabels);
+  return sidePayloads;
+}
+
+function purgeEnvLoopReport() {
+  purgeRecorderReport();
+  for (const chart of el("env-loop-charts").querySelectorAll(".env-loop-chart")) {
+    Plotly.purge(chart);
+  }
+  el("env-loop-summary").replaceChildren();
+  el("env-loop-charts").replaceChildren();
+  el("env-loop-stats-table").replaceChildren();
+  el("env-loop-timing-stats-table").replaceChildren();
+  el("env-loop-empty").hidden = true;
+  el("env-loop-empty").textContent = "";
+  el("env-loop-warnings").hidden = true;
+  el("env-loop-warnings").textContent = "";
+}
+
+function purgeRecorderReport() {
+  el("recorder-section").hidden = true;
+  el("recorder-summary").replaceChildren();
+  el("recorder-raw-overview-table").replaceChildren();
+  el("recorder-camera-table").replaceChildren();
+  el("recorder-robot-state-table").replaceChildren();
+  el("recorder-diagnostics").replaceChildren();
+  el("recorder-lerobot-table").replaceChildren();
+  el("recorder-telemetry-table").replaceChildren();
+  el("recorder-raw-details").open = false;
+  el("recorder-lerobot-details").open = false;
+  el("recorder-telemetry-details").open = false;
+  el("recorder-empty").hidden = true;
+  el("recorder-empty").textContent = "";
+}
+
+function showEnvLoopEmpty(message) {
+  el("env-loop-empty").textContent = message;
+  el("env-loop-empty").hidden = false;
+}
+
+async function renderEnvLoopReport() {
+  purgeEnvLoopReport();
+  const episode = focusEpisode();
+  if (!episode) {
+    showEnvLoopEmpty("Env Loop telemetry unavailable: no episode selected.");
+    return null;
+  }
+  let payload = null;
+  try {
+    const query = new URLSearchParams({ episode });
+    payload = await fetchJson(
+      `/api/env_loop_report?${query.toString()}`,
+    );
+  } catch (err) {
+    showEnvLoopEmpty(
+      `Env Loop telemetry unavailable: ${err.message || err}`,
+    );
+    return { episode, warnings: [`Env Loop telemetry unavailable: ${err.message || err}`] };
+  }
+
+  renderRecorderReport(payload?.recorder_report);
+  renderEnvLoopSummary(payload);
+  await renderEnvLoopMetricCharts(payload);
+  renderEnvLoopStatsTable(payload);
+  renderEnvLoopTimingStatsTable(payload);
+  renderEnvLoopWarnings(payload);
+  if (!envLoopSamples(payload).length) {
+    showEnvLoopEmpty("Env Loop telemetry unavailable: no samples for this episode.");
+  }
+  return payload;
+}
+
+function envLoopSamples(payload) {
+  return Array.isArray(payload?.samples) ? payload.samples : [];
+}
+
+function envLoopSummaryMetrics(payload) {
+  return payload?.summary?.metrics || {};
+}
+
+function envLoopMetricStats(payload, key) {
+  return envLoopSummaryMetrics(payload)[key] || {};
+}
+
+function envLoopSampleTimes(samples) {
+  return samples.map((sample, index) => (
+    Number.isFinite(Number(sample.time_s)) ? Number(sample.time_s) : index
+  ));
+}
+
+function envLoopNumber(value) {
+  if (value === null || value === undefined || value === "" || typeof value === "boolean") return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function formatPercent(value) {
+  const number = envLoopNumber(value);
+  return number === null ? "" : `${(number * 100).toPrecision(4)}%`;
+}
+
+function formatEnvLoopStat(value, column) {
+  if (column === "breach_rate") return formatPercent(value);
+  return formatNumber(value);
+}
+
+function recorderIntegrity(report) {
+  return report?.summary?.integrity || {};
+}
+
+function recorderRaw(report) {
+  return report?.summary?.raw || {};
+}
+
+function formatCount(value) {
+  const number = envLoopNumber(value);
+  return number === null ? "-" : String(Math.round(number));
+}
+
+function formatMs(value) {
+  const number = envLoopNumber(value);
+  return number === null ? "-" : `${formatNumber(number)} ms`;
+}
+
+function formatBytes(value) {
+  const number = envLoopNumber(value);
+  if (number === null) return "-";
+  if (number >= 1024 * 1024 * 1024) return `${(number / (1024 * 1024 * 1024)).toPrecision(3)} GiB`;
+  if (number >= 1024 * 1024) return `${(number / (1024 * 1024)).toPrecision(3)} MiB`;
+  if (number >= 1024) return `${(number / 1024).toPrecision(3)} KiB`;
+  return `${Math.round(number)} B`;
+}
+
+function formatSequenceIssues(latest) {
+  return `gap=${formatCount(latest.gap_count)} / dup=${formatCount(latest.duplicate_count)} / order=${formatCount(latest.out_of_order_count)}`;
+}
+
+function formatAcceptedProcessed(latest) {
+  return `${formatCount(latest.accepted_count)} -> ${formatCount(latest.processed_count)}`;
+}
+
+function formatUnavailableCount(value) {
+  return envLoopNumber(value) === null ? "unavailable" : formatCount(value);
+}
+
+function formatAvailability(value) {
+  if (value === true) return "yes";
+  if (value === false) return "no";
+  return "unavailable";
+}
+
+function formatFilePresence(value) {
+  if (value === true) return "present";
+  if (value === false) return "missing";
+  return "unavailable";
+}
+
+function formatArtifactCoverage(raw) {
+  const coverage = raw?.artifact_coverage || {};
+  if (raw?.recording_status === "unavailable") return "unavailable";
+  return `declared=${formatCount(coverage.declared_existing_count)}/${formatCount(coverage.declared_count)} / actual=${formatCount(coverage.actual_raw_count)}`;
+}
+
+function formatCameraCoverage(raw) {
+  const coverage = raw?.camera_coverage || {};
+  return `expected=${formatUnavailableCount(coverage.expected_count)} / present=${formatUnavailableCount(coverage.present_count)} / passed=${formatUnavailableCount(coverage.passed_count)}`;
+}
+
+function formatRobotStateCoverage(raw) {
+  const coverage = raw?.robot_state_coverage || {};
+  return `left=${formatUnavailableCount(coverage.left?.rows)} / right=${formatUnavailableCount(coverage.right?.rows)}`;
+}
+
+function formatRawDataVolume(raw) {
+  const volume = raw?.data_volume || {};
+  if (raw?.recording_status === "unavailable") return "unavailable";
+  return `video=${formatBytes(volume.video_size_bytes)} / parquet=${formatBytes(volume.parquet_size_bytes)} / total=${formatBytes(volume.total_size_bytes)}`;
+}
+
+function buildRecorderSummaryCards(raw) {
+  const diagnostics = raw?.diagnostics || {};
+  const readiness = raw?.lerobot_readiness || {};
+  const candidate = envLoopNumber(readiness.candidate_frame_count);
+  const accepted = envLoopNumber(readiness.accepted_frame_count);
+  const dropped = envLoopNumber(readiness.dropped_frame_count);
+  const retention = candidate !== null && candidate > 0 && accepted !== null
+    ? accepted / candidate
+    : null;
+  const rawErrorCount = envLoopNumber(diagnostics.error_count);
+  const rawWarningCount = envLoopNumber(diagnostics.warning_count);
+  const rawValid = raw?.verification_status === "valid_completed_episode"
+    && raw?.dataset_eligible === true;
+  const rawState = raw?.dataset_eligible === false || (rawErrorCount !== null && rawErrorCount > 0)
+    ? "error"
+    : (rawValid && !(rawWarningCount > 0) ? "good" : "warning");
+  const readinessPassed = readiness.status === "precheck_passed";
+  const readinessFailed = readiness.status === "precheck_failed";
+  const recordingState = raw?.recording_status === "completed"
+    ? "good"
+    : (raw?.recording_status === "failed" ? "error" : "warning");
+  const usableState = readinessFailed || accepted === 0
+    ? "error"
+    : (dropped !== null && dropped > 0 ? "warning" : (readinessPassed ? "good" : "warning"));
+  const noticeValue = readiness.failure_reason
+    ? String(readiness.failure_reason)
+    : (readinessFailed ? "Precheck failed" : (dropped !== null && dropped > 0 ? `Dropped ${formatCount(dropped)} frames` : (readinessPassed ? "none" : "Precheck pending")));
+  const noticeMeta = readiness.failure_detail
+    ? String(readiness.failure_detail)
+    : (dropped !== null && dropped > 0 ? `max contiguous=${formatCount(readiness.max_contiguous_dropped_frames)}` : (readinessPassed ? "no dropped frames" : "select a completed episode"));
+  return [
+    ["Episode", raw?.recording_status || "unavailable", `close=${raw?.close_reason || "unavailable"}`, recordingState],
+    ["Raw data", rawValid ? "valid" : (raw?.verification_status || "not_verified"), `${formatCount(diagnostics.error_count)} errors / ${formatCount(diagnostics.warning_count)} warnings`, rawState],
+    ["LeRobot", readinessPassed ? "ready" : (readiness.status || "not_checked"), readiness.camera_family && readiness.view_count ? `${readiness.camera_family}/${readiness.view_count}` : "non-materializing precheck", readinessFailed ? "error" : (readinessPassed ? "good" : "warning")],
+    ["Usable samples", candidate !== null && accepted !== null ? `${formatCount(accepted)} / ${formatCount(candidate)}` : "unavailable", retention === null ? "retention unavailable" : `${formatPercent(retention)} retained`, usableState],
+    ["Notice", noticeValue, noticeMeta, readinessFailed ? "error" : (dropped !== null && dropped > 0 || !readinessPassed ? "warning" : "good")],
+  ];
+}
+
+function recorderDetailOpenState(report, raw) {
+  const diagnostics = raw?.diagnostics || {};
+  const readiness = raw?.lerobot_readiness || {};
+  const latest = report?.summary?.latest || {};
+  const accepted = envLoopNumber(latest.accepted_count);
+  const processed = envLoopNumber(latest.processed_count);
+  const rawNeedsAttention = raw?.dataset_eligible === false
+    || raw?.verification_status !== "valid_completed_episode"
+    || [diagnostics.error_count, diagnostics.warning_count, diagnostics.camera_failure_count].some((value) => (envLoopNumber(value) || 0) > 0);
+  const telemetryNeedsAttention = (accepted !== null && processed !== null && accepted !== processed)
+    || (envLoopNumber(report?.summary?.pending_after_drain) || 0) > 0
+    || [latest.overflow_count, latest.gap_count, latest.duplicate_count, latest.out_of_order_count, latest.writer_error_count].some((value) => (envLoopNumber(value) || 0) > 0)
+    || Boolean(latest.latest_error || report?.summary?.worker_error);
+  return {
+    raw: rawNeedsAttention,
+    lerobot: readiness.status === "precheck_failed" || (envLoopNumber(readiness.dropped_frame_count) || 0) > 0,
+    telemetry: telemetryNeedsAttention,
+  };
+}
+
+function renderSimpleTable(targetId, headers, rows) {
+  const table = document.createElement("table");
+  table.className = "env-loop-table";
+  const thead = document.createElement("thead");
+  const headerRow = document.createElement("tr");
+  headers.forEach((header) => {
+    const th = document.createElement("th");
+    th.textContent = header;
+    headerRow.append(th);
+  });
+  thead.append(headerRow);
+  const tbody = document.createElement("tbody");
+  rows.forEach((values) => {
+    const row = document.createElement("tr");
+    values.forEach((value) => {
+      const td = document.createElement("td");
+      td.textContent = value;
+      row.append(td);
+    });
+    tbody.append(row);
+  });
+  table.append(thead, tbody);
+  el(targetId).replaceChildren(table);
+}
+
+function renderRawOverview(raw) {
+  renderSimpleTable(
+    "recorder-raw-overview-table",
+    ["metric", "value"],
+    [
+      ["Artifact coverage", formatArtifactCoverage(raw)],
+      ["Camera coverage", formatCameraCoverage(raw)],
+      ["Robot-state coverage", formatRobotStateCoverage(raw)],
+      ["Raw data volume", formatRawDataVolume(raw)],
+    ],
+  );
+}
+
+function renderRawCameraDetails(raw) {
+  const cameras = Array.isArray(raw?.camera_coverage?.cameras)
+    ? raw.camera_coverage.cameras
+    : [];
+  const rows = cameras.length ? cameras.map((camera) => [
+    String(camera.camera_id || "unavailable"),
+    formatFilePresence(camera.video_exists),
+    formatFilePresence(camera.sidecar_exists),
+    String(camera.verification_status || "not_verified"),
+    formatUnavailableCount(camera.frames),
+    formatUnavailableCount(camera.missing_frame_count),
+    formatUnavailableCount(camera.sequence_gap_count),
+    formatAvailability(camera.sequence_gap_allowed),
+    formatUnavailableCount(camera.timestamp_gap_count),
+    camera.max_frame_dt_ms == null ? "unavailable" : formatMs(camera.max_frame_dt_ms),
+    Array.isArray(camera.failures) && camera.failures.length
+      ? camera.failures.join("; ")
+      : (camera.verification_status === "not_verified" ? "unavailable" : "none"),
+  ]) : [["unavailable", "unavailable", "unavailable", "not_verified", "unavailable", "unavailable", "unavailable", "unavailable", "unavailable", "unavailable", "unavailable"]];
+  renderSimpleTable(
+    "recorder-camera-table",
+    ["camera", "video", "sidecar", "verification", "frames", "missing", "sequence gaps", "gap allowed", "timestamp gaps", "max frame dt", "failures"],
+    rows,
+  );
+}
+
+function renderRawRobotStateDetails(raw) {
+  const coverage = raw?.robot_state_coverage || {};
+  const rows = ["left", "right"].map((side) => {
+    const state = coverage[side] || {};
+    return [
+      side,
+      String(state.path || `raw/robot_state_${side}.parquet`),
+      formatFilePresence(state.present),
+      formatUnavailableCount(state.rows),
+      state.present === true ? formatBytes(state.size_bytes) : "unavailable",
+    ];
+  });
+  renderSimpleTable(
+    "recorder-robot-state-table",
+    ["side", "artifact", "file", "rows", "size"],
+    rows,
+  );
+}
+
+function renderRawDiagnostics(raw) {
+  const diagnostics = raw?.diagnostics || {};
+  const lines = [
+    `errors=${formatUnavailableCount(diagnostics.error_count)} / warnings=${formatUnavailableCount(diagnostics.warning_count)} / camera failures=${formatUnavailableCount(diagnostics.camera_failure_count)}`,
+  ];
+  if (diagnostics.error_count == null) {
+    lines.push("Details unavailable until verification.");
+  } else {
+    for (const [label, values] of [
+      ["error", diagnostics.errors],
+      ["warning", diagnostics.warnings],
+      ["camera failure", diagnostics.camera_failures],
+    ]) {
+      if (Array.isArray(values)) values.forEach((value) => lines.push(`${label}: ${value}`));
+    }
+  }
+  el("recorder-diagnostics").textContent = lines.join("\n");
+}
+
+function renderLeRobotReadiness(raw) {
+  const readiness = raw?.lerobot_readiness || {};
+  const profile = readiness.camera_family && readiness.view_count
+    ? `${readiness.camera_family}/${readiness.view_count}`
+    : "unavailable";
+  renderSimpleTable(
+    "recorder-lerobot-table",
+    [
+      "status",
+      "profile",
+      "candidate frames",
+      "accepted frames",
+      "dropped frames",
+      "drop ratio",
+      "max contiguous dropped",
+      "timeline duration error",
+      "failure reason",
+      "failure detail",
+    ],
+    [
+      [
+        String(readiness.status || "not_checked"),
+        profile,
+        formatUnavailableCount(readiness.candidate_frame_count),
+        formatUnavailableCount(readiness.accepted_frame_count),
+        formatUnavailableCount(readiness.dropped_frame_count),
+        readiness.drop_ratio == null ? "unavailable" : formatPercent(readiness.drop_ratio),
+        formatUnavailableCount(readiness.max_contiguous_dropped_frames),
+        readiness.timeline_duration_relative_error == null ? "unavailable" : formatPercent(readiness.timeline_duration_relative_error),
+        readiness.failure_reason || "none",
+        readiness.failure_detail || "none",
+      ],
+    ],
+  );
+}
+
+function renderRecorderTelemetry(report) {
+  const latest = report?.summary?.latest || {};
+  if (!report?.summary?.sample_count) {
+    renderSimpleTable(
+      "recorder-telemetry-table",
+      ["metric", "value", "detail"],
+      [["status", "unavailable", "no recorder health sample"]],
+    );
+    return;
+  }
+  const integrity = recorderIntegrity(report);
+  const ingestQueueIndex = Array.isArray(latest.queue_names)
+    ? latest.queue_names.indexOf("ingest")
+    : -1;
+  const ingestCapacity = ingestQueueIndex >= 0 && Array.isArray(latest.queue_capacity)
+    ? latest.queue_capacity[ingestQueueIndex]
+    : null;
+  renderSimpleTable(
+    "recorder-telemetry-table",
+    ["metric", "value", "detail"],
+    [
+      ["accepted -> processed", formatAcceptedProcessed(latest), `pending=${formatUnavailableCount(report.summary.pending_after_drain)}`],
+      ["max ingest queue depth", formatUnavailableCount(integrity.max_queue_depth), `capacity=${formatUnavailableCount(ingestCapacity)}`],
+      ["ingest overflow", formatCount(latest.overflow_count ?? integrity.overflow_count), "recorder ingest queue"],
+      ["sequence issues", formatSequenceIssues(latest), "gap / duplicate / out-of-order"],
+      ["writer errors", formatCount(latest.writer_error_count ?? integrity.writer_error_count), latest.latest_error || report.summary.worker_error || "none"],
+    ],
+  );
+}
+
+function renderRecorderReport(report) {
+  if (!report || !report.summary) {
+    el("recorder-section").hidden = true;
+    return;
+  }
+  const raw = recorderRaw(report);
+  const cards = buildRecorderSummaryCards(raw);
+  const detailOpen = recorderDetailOpenState(report, raw);
+  el("recorder-section").hidden = false;
+  el("recorder-summary").replaceChildren(...cards.map(([label, value, meta, state]) => {
+    const card = document.createElement("div");
+    card.className = `summary-card state-${state}`;
+    const labelEl = document.createElement("div");
+    labelEl.className = "label";
+    labelEl.textContent = label;
+    const valueEl = document.createElement("div");
+    valueEl.className = "value";
+    valueEl.textContent = value;
+    const metaEl = document.createElement("div");
+    metaEl.className = "meta";
+    metaEl.textContent = meta;
+    card.append(labelEl, valueEl, metaEl);
+    return card;
+  }));
+  renderRawOverview(raw);
+  renderRawCameraDetails(raw);
+  renderRawRobotStateDetails(raw);
+  renderRawDiagnostics(raw);
+  renderLeRobotReadiness(raw);
+  renderRecorderTelemetry(report);
+  el("recorder-raw-details").open = detailOpen.raw;
+  el("recorder-lerobot-details").open = detailOpen.lerobot;
+  el("recorder-telemetry-details").open = detailOpen.telemetry;
+}
+
+function formatCommandPublishHz(metrics) {
+  return [
+    ["left", metrics.left_arm_command_publish_hz?.mean],
+    ["right", metrics.right_arm_command_publish_hz?.mean],
+    ["gripper", metrics.gripper_command_publish_hz?.mean],
+  ].map(([label, value]) => `${label}=${formatOrDash(formatNumber(value))}`).join(" / ");
+}
+
+function formatPlannerHz(metrics) {
+  return [
+    ["request", metrics.planner_request_hz?.mean],
+    ["trajectory", metrics.planner_trajectory_hz?.mean],
+  ].map(([label, value]) => `${label}=${formatOrDash(formatNumber(value))}`).join(" / ");
+}
+
+function renderEnvLoopSummary(payload) {
+  const metrics = envLoopSummaryMetrics(payload);
+  const cards = [
+    ["mean env_loop_hz", formatNumber(metrics.env_loop_hz?.mean)],
+    ["mean command_publish_hz", formatCommandPublishHz(metrics)],
+    ["mean aligned_obs_hz", formatNumber(metrics.aligned_obs_hz?.mean)],
+    ["mean remote_model_latency_ms", formatNumber(metrics.remote_model_latency_ms?.mean)],
+    ["mean communication_latency_ms", formatNumber(metrics.communication_latency_ms?.mean)],
+    ["mean planner_request_hz / mean planner_trajectory_hz", formatPlannerHz(metrics)],
+  ];
+  el("env-loop-summary").replaceChildren(...cards.map(([label, value]) => {
+    const card = document.createElement("div");
+    card.className = "summary-card";
+    const labelEl = document.createElement("div");
+    labelEl.className = "label";
+    labelEl.textContent = label;
+    const valueEl = document.createElement("div");
+    valueEl.className = "value";
+    valueEl.textContent = formatOrDash(value);
+    card.append(labelEl, valueEl);
+    return card;
+  }));
+}
+
+async function renderEnvLoopMetricCharts(payload) {
+  const samples = envLoopSamples(payload);
+  const times = envLoopSampleTimes(samples);
+  const cards = ENV_LOOP_CHARTS.map((metric) => {
+    const card = document.createElement("div");
+    card.className = "env-loop-card";
+    const label = document.createElement("div");
+    label.className = "env-loop-card-label";
+    label.textContent = metric.label;
+    const chart = document.createElement("div");
+    chart.className = "env-loop-chart";
+    card.append(label, chart);
+    return { card, chart, metric };
+  });
+  el("env-loop-charts").replaceChildren(...cards.map((item) => item.card));
+  await Promise.all(cards.map(async ({ chart, metric }) => {
+    const series = metric.series || [{ key: metric.key, label: metric.label, color: "#1f77b4" }];
+    const seriesValues = series.map((item) => (
+      samples.map((sample) => envLoopNumber(sample[item.key]))
+    ));
+    const pointCount = seriesValues.reduce(
+      (total, values) => total + values.filter((value) => value !== null).length,
+      0,
+    );
+    const hasMissingValues = seriesValues.some((values) => (
+      values.some((value) => value === null)
+    ));
+    const traces = series.map((item, index) => ({
+      x: times,
+      y: seriesValues[index],
+      type: "scatter",
+      mode: pointCount === 1 || hasMissingValues ? "lines+markers" : "lines",
+      name: item.label || item.key,
+      connectgaps: true,
+      line: { color: item.color || "#1f77b4", width: item.width || 1.7 },
+      marker: { color: item.color || "#1f77b4", size: hasMissingValues ? 5 : 7 },
+      hoverlabel: { bgcolor: item.color || "#1f77b4", font: { color: "#ffffff" } },
+      hovertemplate: `${item.label || item.key}<br>time=%{x:.6g}<br>value=%{y:.6g}<extra></extra>`,
+    }));
+    const layout = buildEnvLoopMetricLayout(payload, metric, pointCount);
+    await Plotly.react(chart, traces, layout, plotlyConfig());
+  }));
+}
+
+function buildEnvLoopMetricLayout(payload, metric, pointCount) {
+  const layout = baseGridLayout(1, 1, {
+    l: 54,
+    r: 18,
+    t: 22,
+    b: 36,
+  });
+  layout.xaxis = xAxis(true, 0);
+  layout.yaxis = { automargin: true, zeroline: false };
+  layout.annotations = pointCount ? [] : [{
+    text: `${metric.label} no data`,
+    x: 0.5,
+    y: 0.5,
+    xref: "paper",
+    yref: "paper",
+    showarrow: false,
+    font: { size: 11, color: "#7c8794" },
+  }];
+  const thresholds = [];
+  if (Array.isArray(metric.thresholds)) {
+    thresholds.push(...metric.thresholds);
+  }
+  const targetMetric = metric.targetMetric || metric.key;
+  if (targetMetric) {
+    const target = envLoopNumber(envLoopMetricStats(payload, targetMetric).target);
+    if (target !== null) thresholds.push({ value: target, label: String(target) });
+  }
+  layout.shapes = thresholds
+    .map((threshold) => ({ value: envLoopNumber(threshold.value), label: threshold.label }))
+    .filter((threshold) => threshold.value !== null)
+    .map((threshold) => ({
+      type: "line",
+      xref: "paper",
+      yref: "y",
+      x0: 0,
+      x1: 1,
+      y0: threshold.value,
+      y1: threshold.value,
+      line: { color: "#d62728", width: 1, dash: "dot" },
+    }));
+  layout.annotations = (layout.annotations || []).concat(
+    thresholds
+      .map((threshold) => ({ value: envLoopNumber(threshold.value), label: threshold.label }))
+      .filter((threshold) => threshold.value !== null && threshold.label)
+      .map((threshold) => ({
+        text: threshold.label,
+        x: 1,
+        y: threshold.value,
+        xref: "paper",
+        yref: "y",
+        xanchor: "right",
+        yanchor: "bottom",
+        showarrow: false,
+        font: { size: 10, color: "#d62728" },
+      })),
+  );
+  return layout;
+}
+
+function renderEnvLoopStatsTable(payload) {
+  renderEnvLoopStatsTableFor(
+    payload,
+    ENV_LOOP_METRICS,
+    ENV_LOOP_STAT_COLUMNS,
+    "env-loop-stats-table",
+  );
+}
+
+function renderEnvLoopTimingStatsTable(payload) {
+  renderEnvLoopStatsTableFor(
+    payload,
+    ENV_LOOP_TIMING_METRICS,
+    ENV_LOOP_TIMING_STAT_COLUMNS,
+    "env-loop-timing-stats-table",
+  );
+}
+
+function renderEnvLoopStatsTableFor(payload, metrics, columns, targetId) {
+  const table = document.createElement("table");
+  table.className = "env-loop-table";
+  const thead = document.createElement("thead");
+  const headerRow = document.createElement("tr");
+  for (const label of ["metric", ...columns]) {
+    const th = document.createElement("th");
+    th.textContent = ENV_LOOP_STAT_LABELS[label] || label;
+    headerRow.appendChild(th);
+  }
+  thead.appendChild(headerRow);
+  const tbody = document.createElement("tbody");
+  for (const metric of metrics) {
+    const stats = envLoopMetricStats(payload, metric.key);
+    const row = document.createElement("tr");
+    const name = document.createElement("td");
+    name.textContent = metric.label || metric.key;
+    row.appendChild(name);
+    for (const column of columns) {
+      const cell = document.createElement("td");
+      cell.textContent = formatOrDash(formatEnvLoopStat(stats[column], column));
+      row.appendChild(cell);
+    }
+    tbody.appendChild(row);
+  }
+  table.append(thead, tbody);
+  el(targetId).replaceChildren(table);
+}
+
+function renderEnvLoopWarnings(payload) {
+  const warnings = Array.isArray(payload?.warnings) ? payload.warnings : [];
+  el("env-loop-warnings").hidden = warnings.length === 0;
+  el("env-loop-warnings").textContent = warnings.join("\n");
+}
+
+function purgeIkPlots() {
+  for (const chart of [
+    ...el("ik-compact-plots").querySelectorAll(".ik-compact-chart"),
+    ...el("ik-plots").querySelectorAll(".ik-chart"),
+  ]) {
+    expandablePlots.delete(chart);
+    Plotly.purge(chart);
+  }
+  el("ik-summary").replaceChildren();
+  el("ik-compact-plots").replaceChildren();
+  el("ik-plots").replaceChildren();
+}
+
+async function renderIkMetrics() {
+  const sidePayloads = await fetchSides("/api/ik_solver_metrics");
+  purgeIkPlots();
+  renderIkSummary(sidePayloads);
+  const dimensions = ikDimensionDescriptors(sidePayloads);
+  const compactDimensions = dimensions.filter((dimension) => (
+    IK_COMPACT_DIMENSION_KEYS.includes(dimension.key)
+  ));
+  const detailDimensions = dimensions.filter((dimension) => (
+    !IK_COMPACT_DIMENSION_KEYS.includes(dimension.key)
+  ));
+  const compactCards = compactDimensions.map((dimension) => {
+    const card = document.createElement("div");
+    card.className = "ik-compact-card";
+    const label = document.createElement("div");
+    label.className = "ik-compact-label";
+    label.textContent = dimension.label;
+    const chart = document.createElement("div");
+    chart.className = "ik-compact-chart";
+    card.append(label, chart);
+    return { card, chart, dimension };
+  });
+  el("ik-compact-plots").replaceChildren(...compactCards.map((item) => item.card));
+  await Promise.all(compactCards.map(async ({ chart, dimension }) => {
+    const axisCounts = [0];
+    const traces = ikCompactTracesForDimension(
+      sidePayloads,
+      dimension.key,
+      dimension.label,
+      axisCounts,
+    );
+    const layout = buildIkCompactLayout(dimension, axisCounts);
+    await Plotly.react(chart, traces, layout, plotlyConfig());
+  }));
+  const rows = detailDimensions.map((dimension) => {
+    const row = document.createElement("div");
+    row.className = "metric-row";
+    const label = document.createElement("div");
+    label.className = "metric-label";
+    label.textContent = dimension.label;
+    const chart = document.createElement("div");
+    chart.className = "ik-chart";
+    row.append(label, chart);
+    return { row, chart, dimension };
+  });
+  el("ik-plots").replaceChildren(...rows.map((item) => item.row));
+  await Promise.all(rows.map(async ({ chart, dimension }) => {
+    const axisCounts = [0, 0];
+    const traces = ikTracesForDimension(
+      sidePayloads,
+      dimension.key,
+      dimension.label,
+      axisCounts,
+    );
+    const layout = buildIkLayout(dimension, axisCounts);
+    await Plotly.react(chart, traces, layout, plotlyConfig());
+    installSubplotExpanders(
+      chart,
+      SIDES.map((side) => `${dimension.label} / ${side.label}`),
+    );
+  }));
+  return sidePayloads;
+}
+
+function renderIkSummary(sidePayloads) {
+  const cards = [
+    ["mean duration_ms", formatIkMeanDuration(sidePayloads)],
+    ["p95 duration_ms", formatSharedMetric(
+      sidePayloads,
+      (metrics) => formatNumber(metrics.p95_duration_ms),
+    )],
+    ["max duration_ms", formatSharedMetric(
+      sidePayloads,
+      (metrics) => formatNumber(metrics.max_duration_ms),
+    )],
+    ["max_joint_step_rad", formatSharedMetric(
+      sidePayloads,
+      (metrics) => formatNumber(metrics.max_joint_step_rad),
+    )],
+    ["task weights", formatSharedMetric(
+      sidePayloads,
+      (metrics) => formatTaskWeights(metrics.task_weights),
+    )],
+    ["joint jump rejects", formatSharedMetric(
+      sidePayloads,
+      (metrics) => String(metrics.joint_jump_reject_count || 0),
+    )],
+  ];
+  el("ik-summary").replaceChildren(...cards.map(([label, value]) => {
+    const card = document.createElement("div");
+    card.className = "summary-card";
+    const labelEl = document.createElement("div");
+    labelEl.className = "label";
+    labelEl.textContent = label;
+    const valueEl = document.createElement("div");
+    valueEl.className = "value";
+    valueEl.textContent = value;
+    card.append(labelEl, valueEl);
+    return card;
+  }));
+}
+
+function ikMetricEntries(sidePayloads) {
+  return SIDES.flatMap((side) => {
+    const metrics = sidePayloads?.[side.key]?.payload?.metric_summary;
+    return metrics ? [{ side, metrics }] : [];
+  });
+}
+
+function firstIkMetricEntry(sidePayloads) {
+  const entries = ikMetricEntries(sidePayloads);
+  return entries.length ? entries[0] : null;
+}
+
+function formatSharedMetric(sidePayloads, formatter) {
+  const entry = firstIkMetricEntry(sidePayloads);
+  return entry ? formatter(entry.metrics, entry.side) : "";
+}
+
+function formatIkMeanDuration(sidePayloads) {
+  const entry = firstIkMetricEntry(sidePayloads);
+  return entry ? formatMeanDuration(entry.metrics) : "";
+}
+
+function formatMeanDuration(metrics) {
+  const duration = formatNumber(metrics.mean_duration_ms);
+  if (!metrics.ik_solver_name) return duration;
+  return duration ? `${duration} (${metrics.ik_solver_name})` : metrics.ik_solver_name;
+}
+
+function formatOrDash(value) {
+  return value === "" || value === null || value === undefined ? "-" : value;
+}
+
+function formatNumber(value) {
+  if (value === null || value === undefined || Number.isNaN(Number(value))) {
+    return "";
+  }
+  return Number(value).toPrecision(4);
+}
+
+function formatTaskWeights(weights) {
+  if (!weights) return "";
+  return [
+    `pos=${formatOrDash(formatNumber(weights.frame_position))}`,
+    `ori=${formatOrDash(formatNumber(weights.frame_orientation))}`,
+    `post=${formatOrDash(formatNumber(weights.posture))}`,
+    `damp=${formatOrDash(formatNumber(weights.damping))}`,
+  ].join(" ");
+}
+
+function ikDimensionDescriptors(sidePayloads) {
+  const byKey = new Map();
+  SIDES.forEach((side) => {
+    const entry = sidePayloads[side.key];
+    if (!entry) return;
+    episodeViews(entry.payload).forEach((episodeView) => {
+      (episodeView.dimensions || []).forEach((dimension) => {
+        if (!byKey.has(dimension.key)) {
+          byKey.set(dimension.key, {
+            key: dimension.key,
+            label: ikDimensionLabel(dimension.key, dimension.label),
+          });
+        }
+      });
+    });
+  });
+  return Array.from(byKey.values());
+}
+
+function ikDimensionLabel(key, fallback) {
+  return IK_DIMENSION_LABELS[key] || fallback || key;
+}
+
+function isSharedIkDimension(dimensionKey) {
+  return IK_SHARED_DIMENSION_KEYS.includes(dimensionKey);
+}
+
+function ikTracesForDimension(sidePayloads, dimensionKey, dimensionLabel, axisCounts) {
+  const traces = [];
+  const legendTracker = new Set();
+  SIDES.forEach((side, axisIndex) => {
+    const entry = sidePayloads[side.key];
+    if (!entry) return;
+    episodeViews(entry.payload).forEach((episodeView, episodeIndex) => {
+      const dimension = dimensionByKey(episodeView, dimensionKey);
+      if (!dimension) return;
+      (dimension.series || []).forEach((series, seriesIndex) => {
+        const seriesLabel = String(series.label || series.key || "series");
+        const hasData = series.times && series.times.length;
+        const style = episodeStyle(episodeView.episode, episodeIndex);
+        const seriesColor = IK_SERIES_COLORS[seriesIndex % IK_SERIES_COLORS.length];
+        if (hasData) axisCounts[axisIndex] += 1;
+        traces.push({
+          x: series.times,
+          y: series.values,
+          name: seriesLabel,
+          legendgroup: seriesLabel,
+          showlegend: hasData ? consumeLegend(legendTracker, seriesLabel) : false,
+          type: "scatter",
+          mode: traceMode(series),
+          opacity: style.opacity,
+          line: {
+            color: seriesColor,
+            width: style.width,
+            dash: style.dash,
+          },
+          marker: {
+            color: seriesColor,
+            size: 7,
+          },
+          hoverlabel: traceHoverLabel(seriesColor),
+          meta: {
+            episode: episodeView.episode || "",
+            side: side.label,
+            series: seriesLabel,
+          },
+          ...cellAxis(axisIndex),
+          hovertemplate: xyHoverTemplate(),
+        });
+      });
+    });
+  });
+  return traces;
+}
+
+function ikCompactTracesForDimension(sidePayloads, dimensionKey, dimensionLabel, axisCounts) {
+  const traces = [];
+  const legendTracker = new Set();
+  const availableSides = SIDES.filter((side) => sidePayloads[side.key]);
+  const sources = isSharedIkDimension(dimensionKey)
+    ? availableSides.slice(0, 1)
+    : availableSides;
+  sources.forEach((side) => {
+    const entry = sidePayloads[side.key];
+    if (!entry) return;
+    episodeViews(entry.payload).forEach((episodeView, episodeIndex) => {
+      const dimension = dimensionByKey(episodeView, dimensionKey);
+      if (!dimension) return;
+      (dimension.series || []).forEach((series, seriesIndex) => {
+        const seriesLabel = String(series.label || series.key || "series");
+        const hasData = series.times && series.times.length;
+        const style = episodeStyle(episodeView.episode, episodeIndex);
+        const sharedDimension = isSharedIkDimension(dimensionKey);
+        const legendName = sharedDimension ? seriesLabel : `${side.short} ${seriesLabel}`;
+        const legendKey = sharedDimension ? seriesLabel : `${side.key}:${seriesLabel}`;
+        const seriesColor = sharedDimension
+          ? IK_SERIES_COLORS[seriesIndex % IK_SERIES_COLORS.length]
+          : IK_SIDE_COLORS[side.key];
+        if (hasData) axisCounts[0] += 1;
+        traces.push({
+          x: series.times,
+          y: series.values,
+          name: legendName,
+          legendgroup: legendKey,
+          showlegend: hasData ? consumeLegend(legendTracker, legendKey) : false,
+          type: "scatter",
+          mode: traceMode(series),
+          opacity: style.opacity,
+          line: {
+            color: seriesColor,
+            width: style.width,
+            dash: IK_COMPACT_SERIES_DASHES[
+              seriesIndex % IK_COMPACT_SERIES_DASHES.length
+            ],
+          },
+          marker: {
+            color: seriesColor,
+            size: 7,
+          },
+          hoverlabel: traceHoverLabel(seriesColor),
+          meta: {
+            episode: episodeView.episode || "",
+            side: sharedDimension ? "Shared" : side.label,
+            series: seriesLabel,
+          },
+          hovertemplate: xyHoverTemplate(),
+        });
+      });
+    });
+  });
+  return traces;
+}
+
+function buildIkCompactLayout(dimension, axisCounts) {
+  const layout = baseGridLayout(1, 1, {
+    l: 54,
+    r: 18,
+    t: 24,
+    b: 36,
+  });
+  layout.legend = {
+    orientation: "h",
+    x: 1,
+    xanchor: "right",
+    y: 1.16,
+    yanchor: "top",
+    bgcolor: "rgba(255,255,255,0.75)",
+    font: { size: 10 },
+  };
+  layout.annotations = emptyAnnotations(axisCounts, [dimension.label]);
+  layout.xaxis = xAxis(true, 0);
+  layout.yaxis = {
+    automargin: true,
+    zeroline: dimension.key.includes("margin"),
+    zerolinecolor: "#7c8794",
+    zerolinewidth: 1,
+  };
+  return layout;
+}
+
+function buildIkLayout(dimension, axisCounts) {
+  const layout = baseGridLayout(1, 2, {
+    l: 54,
+    r: 18,
+    t: 34,
+    b: 36,
+  });
+  layout.legend = {
+    orientation: "h",
+    x: 1,
+    xanchor: "right",
+    y: 1.22,
+    yanchor: "top",
+    bgcolor: "rgba(255,255,255,0.75)",
+    font: { size: 11 },
+  };
+  layout.shapes = dividerShapes();
+  layout.annotations = [
+    columnTitle("Left", 0.235),
+    columnTitle("Right", 0.765),
+    ...emptyAnnotations(axisCounts, ["Left", "Right"]),
+  ];
+  for (let axisIndex = 0; axisIndex < 2; axisIndex += 1) {
+    const suffix = axisName(axisIndex);
+    layout["xaxis" + suffix] = xAxis(true, axisIndex);
+    layout["yaxis" + suffix] = {
+      automargin: true,
+      zeroline: dimension.key.includes("margin"),
+      zerolinecolor: "#7c8794",
+      zerolinewidth: 1,
+    };
+  }
+  return layout;
+}
+
+function installSubplotExpanders(plotElement, axisLabels) {
+  expandablePlots.set(plotElement, axisLabels);
+  renderSubplotExpanders(plotElement, axisLabels);
+}
+
+function renderSubplotExpanders(plotElement, axisLabels) {
+  plotElement.querySelectorAll(".subplot-expanders").forEach((layer) => layer.remove());
+  const fullLayout = plotElement._fullLayout;
+  const size = fullLayout?._size;
+  if (!fullLayout || !size) return;
+  const layer = document.createElement("div");
+  layer.className = "subplot-expanders";
+  axisLabels.forEach((label, axisIndex) => {
+    const suffix = axisName(axisIndex);
+    const xAxis = fullLayout["xaxis" + suffix];
+    const yAxis = fullLayout["yaxis" + suffix];
+    if (!xAxis?.domain || !yAxis?.domain) return;
+    const button = document.createElement("button");
+    button.className = "subplot-expand";
+    button.type = "button";
+    button.textContent = "+";
+    button.title = "放大子图";
+    button.setAttribute("aria-label", `放大 ${label}`);
+    button.style.left = `${size.l + xAxis.domain[1] * size.w - 27}px`;
+    button.style.top = `${size.t + (1 - yAxis.domain[1]) * size.h + 5}px`;
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      openSubplotModal(plotElement, axisIndex, label);
+    });
+    layer.appendChild(button);
+  });
+  if (layer.children.length) plotElement.appendChild(layer);
+}
+
+function refreshSubplotExpanders() {
+  expandablePlots.forEach((axisLabels, plotElement) => {
+    if (document.body.contains(plotElement)) {
+      renderSubplotExpanders(plotElement, axisLabels);
+    } else {
+      expandablePlots.delete(plotElement);
+    }
+  });
+}
+
+function traceAxisIndex(trace) {
+  const axisRefName = trace.xaxis || "x";
+  if (axisRefName === "x") return 0;
+  return Number(axisRefName.slice(1)) - 1;
+}
+
+function tracesForAxis(plotElement, axisIndex) {
+  const traces = [];
+  const legendTracker = new Set();
+  (plotElement.data || []).forEach((trace) => {
+    if (traceAxisIndex(trace) !== axisIndex) return;
+    const copy = JSON.parse(JSON.stringify(trace));
+    delete copy.xaxis;
+    delete copy.yaxis;
+    const legendKey = copy.legendgroup || copy.name || `trace-${traces.length}`;
+    copy.showlegend = consumeLegend(legendTracker, legendKey);
+    traces.push(copy);
+  });
+  return traces;
+}
+
+function axisTitle(axis) {
+  if (!axis?.title) return "";
+  if (typeof axis.title === "string") return axis.title;
+  return axis.title.text || "";
+}
+
+function modalLayoutForAxis(plotElement, axisIndex, title, hasTraces) {
+  const suffix = axisName(axisIndex);
+  const sourceLayout = plotElement._fullLayout || {};
+  const sourceX = sourceLayout["xaxis" + suffix] || {};
+  const sourceY = sourceLayout["yaxis" + suffix] || {};
+  const layout = {
+    title: { text: title, font: { size: 15 } },
+    margin: { l: 70, r: 28, t: 48, b: 52 },
+    hovermode: "closest",
+    dragmode: "zoom",
+    uirevision: `modal-${title}`,
+    paper_bgcolor: "#ffffff",
+    plot_bgcolor: "#ffffff",
+    legend: { orientation: "h", y: 1.12 },
+    xaxis: {
+      title: axisTitle(sourceX) || "time (s)",
+      automargin: true,
+      zeroline: Boolean(sourceX.zeroline),
+    },
+    yaxis: {
+      title: axisTitle(sourceY),
+      automargin: true,
+      zeroline: Boolean(sourceY.zeroline),
+      zerolinecolor: sourceY.zerolinecolor || "#7c8794",
+      zerolinewidth: sourceY.zerolinewidth || 1,
+    },
+  };
+  if (!hasTraces) {
+    layout.annotations = [{
+      text: "no data",
+      x: 0.5,
+      y: 0.5,
+      xref: "paper",
+      yref: "paper",
+      showarrow: false,
+      font: { size: 12, color: "#7c8794" },
+    }];
+  }
+  return layout;
+}
+
+async function openSubplotModal(plotElement, axisIndex, title) {
+  const traces = tracesForAxis(plotElement, axisIndex);
+  const modal = el("plot-modal");
+  modal.hidden = false;
+  document.body.classList.add("modal-open");
+  el("modal-title").textContent = title;
+  await Plotly.react(
+    el("modal-plot"),
+    traces,
+    modalLayoutForAxis(plotElement, axisIndex, title, traces.length > 0),
+    modalPlotConfig(),
+  );
+  Plotly.Plots.resize(el("modal-plot"));
+}
+
+function closeSubplotModal() {
+  Plotly.purge(el("modal-plot"));
+  el("plot-modal").hidden = true;
+  document.body.classList.remove("modal-open");
+}
+
+function resetModalPlot() {
+  Plotly.relayout(el("modal-plot"), {
+    "xaxis.autorange": true,
+    "yaxis.autorange": true,
+  });
+}
+
+function combineWarnings(...payloadMaps) {
+  const warnings = [];
+  payloadMaps.forEach((payloadMap) => {
+    if (Array.isArray(payloadMap?.warnings)) {
+      payloadMap?.warnings.forEach((warning) => warnings.push(`Env Loop: ${warning}`));
+      return;
+    }
+    SIDES.forEach((side) => {
+      const payload = payloadMap?.[side.key]?.payload;
+      (payload?.warnings || []).forEach((warning) => {
+        warnings.push(`${side.label}: ${warning}`);
+      });
+    });
+  });
+  return warnings;
+}
+
+function formatStatus(ikPayloads, envLoopPayload) {
+  const selected = selectedEpisodes();
+  const rendered = displayedEpisodes();
+  const mode = el("view-mode").value;
+  const leftIkCount = ikPayloads?.left?.payload?.metric_summary?.sample_count || 0;
+  const rightIkCount = ikPayloads?.right?.payload?.metric_summary?.sample_count || 0;
+  const envSampleCount = (
+    envLoopPayload?.summary?.sample_count
+    || envLoopSamples(envLoopPayload).length
+    || 0
+  );
+  return [
+    `${selected.length} selected episode${selected.length === 1 ? "" : "s"}`,
+    `${rendered.length} shown episode${rendered.length === 1 ? "" : "s"}`,
+    `focus: ${focusEpisode() || "-"}`,
+    `view: ${mode}`,
+    `Telemetry samples: ${envSampleCount}`,
+    `IK samples: left ${leftIkCount}, right ${rightIkCount}`,
+  ].join("\n");
+}
+
+function plotlyConfig() {
+  return {
+    responsive: true,
+    displaylogo: false,
+    displayModeBar: true,
+    scrollZoom: false,
+  };
+}
+
+function modalPlotConfig() {
+  return {
+    responsive: true,
+    displaylogo: false,
+    displayModeBar: true,
+    scrollZoom: true,
+  };
+}
+
+function updatePanelText() {
+  el("warnings").textContent = combineWarnings(
+    state.envLoopPayload,
+    state.mainPayloads,
+    state.ikPayloads,
+  ).join("\n");
+  el("status").textContent = formatStatus(state.ikPayloads, state.envLoopPayload);
+}
+
+async function refresh() {
+  syncFocusOptions();
+  const episodes = displayedEpisodes();
+  if (!episodes.length) {
+    el("status").textContent = "no episodes";
+    el("warnings").textContent = "";
+    Plotly.purge("main-plot");
+    expandablePlots.delete(el("main-plot"));
+    purgeEnvLoopReport();
+    purgeIkPlots();
+    state.mainPayloads = null;
+    state.ikPayloads = null;
+    state.envLoopPayload = null;
+    return;
+  }
+  try {
+    await ensureDisplayedEpisodesVerified(episodes);
+    await ensureDisplayedEpisodesPrechecked(episodes);
+    const [envLoopPayload, mainPayloads, ikPayloads] = await Promise.all([
+      renderEnvLoopReport(),
+      renderMainPlot(),
+      renderIkMetrics(),
+    ]);
+    state.envLoopPayload = envLoopPayload;
+    state.mainPayloads = mainPayloads;
+    state.ikPayloads = ikPayloads;
+    updatePanelText();
+  } catch (err) {
+    el("warnings").textContent = `错误: ${err.message || err}`;
+  }
+}
+
+async function refreshTrajectory() {
+  const episodes = displayedEpisodes();
+  if (!episodes.length) {
+    el("status").textContent = "no episodes";
+    el("warnings").textContent = "";
+    Plotly.purge("main-plot");
+    expandablePlots.delete(el("main-plot"));
+    state.mainPayloads = null;
+    return;
+  }
+  try {
+    state.mainPayloads = await renderMainPlot();
+    updatePanelText();
+  } catch (err) {
+    el("warnings").textContent = `错误: ${err.message || err}`;
+  }
+}
+
+function bind() {
+  el("episode").addEventListener("change", () => {
+    syncFocusOptions();
+    refresh();
+  });
+  el("focus-episode").addEventListener("change", refresh);
+  el("show-all").addEventListener("change", refresh);
+  el("refresh").addEventListener("click", refresh);
+  for (const id of ["mode-pose", "mode-joint"]) {
+    el(id).addEventListener("click", (event) => {
+      const mode = event.target.dataset.mode;
+      el("view-mode").value = mode;
+      el("mode-pose").classList.toggle("active", event.target.id === "mode-pose");
+      el("mode-joint").classList.toggle("active", event.target.id === "mode-joint");
+      el("planner-chunk-control").hidden = mode !== "pose";
+      refreshTrajectory();
+    });
+  }
+  el("show-planner-chunks").addEventListener("change", refreshTrajectory);
+  el("modal-close").addEventListener("click", closeSubplotModal);
+  el("modal-reset").addEventListener("click", resetModalPlot);
+  el("plot-modal").addEventListener("click", (event) => {
+    if (event.target.dataset.closeModal !== undefined) closeSubplotModal();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && !el("plot-modal").hidden) closeSubplotModal();
+  });
+  window.addEventListener("resize", refreshSubplotExpanders);
+}
+
+bind();
+loadEpisodes().then(refresh).catch((err) => {
+  el("warnings").textContent = `错误: ${err.message || err}`;
+});
+</script>
+</body>
+</html>

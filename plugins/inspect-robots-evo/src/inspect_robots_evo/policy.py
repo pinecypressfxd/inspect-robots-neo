@@ -6,18 +6,21 @@ import json
 import os
 import threading
 import time
+import traceback
 from pathlib import Path
 
 import numpy as np
+from inspect_robots_agent._anthropic import AnthropicClient
 from inspect_robots_agent._llm import Provider
 from inspect_robots_agent._responses import ResponsesClient
 
 from inspect_robots.policy import PolicyBase, PolicyConfig, PolicyInfo
+from inspect_robots.scene import Scene
 from inspect_robots.spaces import Box
 from inspect_robots.types import Action, ActionChunk, Observation
 from inspect_robots_evo.episode import Episode, ScriptedModel, ToolTurn
 from inspect_robots_evo.executor import Aborted
-from inspect_robots_evo.motion import DIM_LABELS, interpolate, reached
+from inspect_robots_evo.motion import DIM_LABELS, applied_targets, interpolate, reached
 from inspect_robots_evo.workspace import Workspace
 
 
@@ -45,16 +48,28 @@ class RolloutPort:
         return dict(self.result or {})
 
 
-class ResponsesModel:
-    """把 ResponsesClient 的一次工具调用转成 ToolTurn."""
+class _NoThinking:
+    """GLM 的 Anthropic 兼容接口不接受 adaptive thinking."""
 
-    def __init__(self, client: ResponsesClient) -> None:
+    def __init__(self, client: AnthropicClient) -> None:
+        self._client = client
+
+    def complete(self, messages: list[dict[str, object]], tools: list[dict[str, object]]) -> object:
+        return self._client.complete(messages, tools, reasoning_effort="none")
+
+
+class ResponsesModel:
+    """把一次工具调用转成 ToolTurn. Astra 与 GLM 共用."""
+
+    def __init__(self, client: ResponsesClient | _NoThinking) -> None:
         self.client = client
+        self.calls = 0
 
     def complete(
         self, messages: list[dict[str, object]], tools: list[dict[str, object]]
     ) -> ToolTurn:
         """取第一个工具调用. 没有工具调用时视为 give_up."""
+        self.calls += 1
         reply = self.client.complete(messages, tools)
         if not reply.tool_calls:
             return ToolTurn("give_up", {})
@@ -83,9 +98,16 @@ class EvoPolicy(PolicyBase):
         self._started = False
         self._awaiting = False
         self._targets: dict[str, float] = {}
+        self._home: dict[str, float] | None = None
+        self._limited: tuple[str, ...] = ()
         self._steps = 0
         self._reason = "give_up"
         self._finished = threading.Event()
+
+    def reset(self, scene: Scene) -> None:
+        """把这次场景的任务句子写进工作区, 再开始执行."""
+        self.workspace.prepare(scene.instruction)
+        self._home = None
 
     def bind(self, embodiment_info) -> None:
         """采用本体自己的动作空间和观察空间."""
@@ -128,22 +150,32 @@ class EvoPolicy(PolicyBase):
                 observation_provider=self._provider,
             )
             self._reason = episode.run(self.model, self.abort).reason
+        except Exception as exc:
+            traceback.print_exc()
+            self._reason = f"error: {exc}"
         finally:
             self._finished.set()
 
     def _finish_motion(self) -> None:
         row = [self._eef_map()[label] for label in DIM_LABELS]
         held = not reached(row, self._targets)
-        self.port.result = {"held": held, "steps": 0 if held else self._steps}
+        result: dict[str, object] = {"held": held, "steps": 0 if held else self._steps}
+        if self._limited:
+            result["limited"] = self._limited
+        self.port.result = result
         self._awaiting = False
         self.port.need.clear()
         self.port.done.set()
 
     def _emit(self, targets: dict[str, float]) -> ActionChunk:
         self.port.need.clear()
-        rows, steps = interpolate(self._eef_map(), targets)
+        current = self._eef_map()
+        if self._home is None:
+            self._home = dict(current)
+        applied, self._limited = applied_targets(current, targets, self._home)
+        rows, steps = interpolate(current, applied, home=self._home)
         self._steps = steps
-        self._targets = dict(targets)
+        self._targets = applied
         self._awaiting = True
         actions = [Action(np.asarray(row, dtype=np.float64), {}) for row in rows]
         return ActionChunk(actions)
@@ -190,18 +222,28 @@ def evo_policy(**kwargs: object) -> EvoPolicy:
 
     if isinstance(model, str):
         key_env = str(kwargs.get("api_key_env", ""))
-        client = ResponsesClient(
-            Provider(
-                base_url=str(kwargs.get("base_url", "")),
-                api_key=os.environ.get(key_env, ""),
-                model=model,
-                wire="responses",
-            )
+        wired = coding_model(
+            model,
+            base_url=str(kwargs.get("base_url", "")),
+            api_key=os.environ.get(key_env, ""),
+            wire=str(kwargs.get("wire", "responses")),
         )
-        return EvoPolicy(ResponsesModel(client), workspace, outcome_reader=reader)
+        return EvoPolicy(wired, workspace, outcome_reader=reader)
     if not hasattr(model, "complete"):
         raise ValueError("evo model must be a name or a complete() client")
     return EvoPolicy(model, workspace, outcome_reader=reader)
+
+
+def coding_model(model: str, *, base_url: str, api_key: str, wire: str) -> ResponsesModel:
+    """按线路构造编程智能体. Astra 走 responses, GLM 走 anthropic."""
+    provider = Provider(base_url=base_url, api_key=api_key, model=model, wire=wire)
+    if wire == "anthropic":
+        client: ResponsesClient | _NoThinking = _NoThinking(AnthropicClient(provider))
+    elif wire == "responses":
+        client = ResponsesClient(provider)
+    else:
+        raise ValueError(f"unknown evo wire {wire}")
+    return ResponsesModel(client)
 
 
 def _wait_for_outcome(workspace: Workspace) -> bool:

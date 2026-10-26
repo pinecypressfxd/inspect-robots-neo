@@ -245,6 +245,23 @@ def _end_operator_trial(operator_input: OperatorInput | None) -> None:
             )
 
 
+def _operator_stop_pending(operator_input: OperatorInput | None) -> bool:
+    """Whether the echo pump interrupted this trial for a queued end request.
+
+    A real Ctrl-C has no ``stop_pending`` hook, so it stays on the cancel path.
+    A raising poll is ignored and the cancel path runs.
+    """
+    if operator_input is None:
+        return False
+    pending = getattr(operator_input, "stop_pending", None)
+    if not callable(pending) or not bool(pending()):
+        return False
+    try:
+        return operator_input.poll().end is not None
+    except Exception:
+        return False
+
+
 def rollout(
     policy: Policy,
     embodiment: Embodiment,
@@ -518,10 +535,16 @@ def rollout(
             record.truncated = True
             record.termination_reason = "max_steps"
     except KeyboardInterrupt as exc:
-        record.status = "cancelled"
-        record.error = "cancelled by user (KeyboardInterrupt)"
-        record.events.append(error_event(t, "KeyboardInterrupt", "cancelled by user"))
-        raise _CancelledTrial(record.error, record) from exc
+        if _operator_stop_pending(operator_input):
+            # The echo pump interrupted a blocked inference after queuing /stop
+            # or Esc. Honor that end request instead of recording a cancel.
+            record.terminated = True
+            record.termination_reason = OPERATOR_END
+        else:
+            record.status = "cancelled"
+            record.error = "cancelled by user (KeyboardInterrupt)"
+            record.events.append(error_event(t, "KeyboardInterrupt", "cancelled by user"))
+            raise _CancelledTrial(record.error, record) from exc
     finally:
         _end_operator_trial(operator_input)
         # Preserve measured latencies even when the trial ends in an error.

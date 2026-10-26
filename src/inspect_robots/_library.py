@@ -7,14 +7,19 @@ what an ad-hoc run and a registered task both carry.
 
 from __future__ import annotations
 
+import base64
 import json
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass
+from pathlib import Path
 
 from inspect_robots._html_index import _ERROR_LIMIT, IndexEntry, _escape, _number
 
 _SLUG_MAX = 48
+_ROBOT_BACKGROUND = "data:image/webp;base64," + base64.b64encode(
+    (Path(__file__).resolve().parent / "assets" / "robot.webp").read_bytes()
+).decode("ascii")
 
 
 @dataclass(frozen=True)
@@ -40,14 +45,22 @@ def task_slug(instruction: str, taken: set[str]) -> str:
 
 
 def group_library(entries: Sequence[IndexEntry]) -> tuple[LibraryTask, ...]:
-    """Group index rows by shared instruction; runs inside a task are newest-first."""
+    """Group index rows by shared instruction.
+
+    Tasks are ordered by their newest run, newest first. Runs inside a task
+    are newest-first too.
+    """
     grouped: dict[str, list[IndexEntry]] = {}
     for entry in entries:
         if entry.instruction:
             grouped.setdefault(entry.instruction, []).append(entry)
     tasks: list[LibraryTask] = []
     taken: set[str] = set()
-    for instruction in sorted(grouped):
+
+    def newest(instruction: str) -> str:
+        return max(entry.created for entry in grouped[instruction])
+
+    for instruction in sorted(grouped, key=newest, reverse=True):
         runs = tuple(sorted(grouped[instruction], key=lambda entry: entry.created, reverse=True))
         tasks.append(
             LibraryTask(slug=task_slug(instruction, taken), instruction=instruction, runs=runs)
@@ -76,52 +89,36 @@ def success_fraction(task: LibraryTask) -> str:
 
 _STYLES = """
 :root {
-  color-scheme: light dark;
-  --bg: #f7f8fa;
-  --panel: #ffffff;
-  --text: #20242b;
-  --muted: #68707d;
-  --line: #dfe3e8;
-  --link: #245ca6;
-  --green: #19723b;
-  --green-bg: #e9f6ed;
-  --red: #a12a2a;
-  --red-bg: #fbecec;
-  --grey: #626a75;
-  --grey-bg: #eef0f2;
-  --amber: #8a5700;
-  --amber-bg: #fff5d9;
-  --neutral: #45546a;
-  --neutral-bg: #edf1f6;
-}
-@media (prefers-color-scheme: light) {
-  :root { color-scheme: light; }
-}
-@media (prefers-color-scheme: dark) {
-  :root {
-    --bg: #111419;
-    --panel: #191d24;
-    --text: #e7eaf0;
-    --muted: #a4acb8;
-    --line: #343a45;
-    --link: #8ebcff;
-    --green: #7ed99a;
-    --green-bg: #193b27;
-    --red: #ff9b9b;
-    --red-bg: #492323;
-    --grey: #c0c5cd;
-    --grey-bg: #343943;
-    --amber: #ffd484;
-    --amber-bg: #3b2d12;
-    --neutral: #b9c9df;
-    --neutral-bg: #293342;
-  }
+  color-scheme: dark;
+  --bg: rgba(7, 7, 8, 0.62);
+  --panel: rgba(12, 13, 16, 0.72);
+  --text: #e7eaf0;
+  --muted: #a4acb8;
+  --line: #343a45;
+  --link: #8ebcff;
+  --green: #7ed99a;
+  --green-bg: #193b27;
+  --red: #ff9b9b;
+  --red-bg: #492323;
+  --grey: #c0c5cd;
+  --grey-bg: #343943;
+  --amber: #ffd484;
+  --amber-bg: #3b2d12;
+  --neutral: #b9c9df;
+  --neutral-bg: #293342;
 }
 * { box-sizing: border-box; }
 body {
   margin: 0;
-  background: var(--bg);
   color: var(--text);
+  background-color: #050506;
+  background-image:
+    linear-gradient(90deg, rgba(5, 5, 6, 0.82), rgba(5, 5, 6, 0.2)),
+    url("__ROBOT_BACKGROUND__");
+  background-repeat: no-repeat;
+  background-position: center, right center;
+  background-size: cover;
+  background-attachment: fixed;
   font: 14px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 header { border-bottom: 1px solid var(--line); background: var(--panel); }
@@ -154,6 +151,18 @@ a { color: var(--link); }
 }
 .task-card:hover { background: var(--bg); }
 .task-card .instruction { color: var(--link); font-weight: 650; overflow-wrap: anywhere; }
+.kind {
+  display: inline-block;
+  margin-right: 6px;
+  padding: 0 7px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: .03em;
+  vertical-align: 1px;
+}
 .task-card .stats { color: var(--muted); margin-top: 3px; }
 .timing { color: var(--muted); font-size: 12px; margin-top: 2px;
   font-variant-numeric: tabular-nums; }
@@ -195,17 +204,27 @@ tbody tr:hover { background: var(--bg); }
 .when, .log { white-space: nowrap; }
 .error-cell { color: var(--red); min-width: 150px; max-width: 280px; overflow-wrap: anywhere; }
 .empty { color: var(--muted); padding: 28px 12px; text-align: center; }
-""".strip()
+""".replace("__ROBOT_BACKGROUND__", _ROBOT_BACKGROUND).strip()
 
 _FILTER_KEY = "inspect-robots-library-filter"
 _POLICY_KEY = "inspect-robots-library-policies"
 
 
+def _policy_names(runs: Sequence[IndexEntry]) -> list[str]:
+    """Sorted policy labels carried by these runs."""
+    return sorted({run.policy for run in runs if run.policy})
+
+
+def _labeled_instruction(instruction: str, policies: Sequence[str]) -> str:
+    """Prompt text with each policy tag at the front."""
+    tags = "".join(f'<span class="kind">{_escape(policy)}</span>' for policy in policies)
+    return f"{tags}{_escape(instruction)}"
+
+
 def _task_card(task: LibraryTask) -> str:
     """Render one fully escaped task card linking its per-task page."""
-    policies = sorted({run.policy for run in task.runs if run.policy})
+    policies = _policy_names(task.runs)
     data_policy = f' data-policy="{_escape(json.dumps(policies))}"' if policies else ""
-    policy_line = f'<div class="policies">{_escape(", ".join(policies))}</div>' if policies else ""
     runs_word = "run" if len(task.runs) == 1 else "runs"
     stats = (
         f"{len(task.runs)} {runs_word} · success {success_fraction(task)} · "
@@ -217,9 +236,9 @@ def _task_card(task: LibraryTask) -> str:
         f'<a class="task-card" href="task-{_escape(task.slug)}.html"{data_policy} '
         f'data-text="{_escape(" ".join([task.instruction, *policies]))}">'
         f'<div class="instruction" title="{_escape(task.instruction)}">'
-        f"{_escape(task.instruction)}</div>"
+        f"{_labeled_instruction(task.instruction, policies)}</div>"
         f'<div class="stats">{stats}</div>'
-        f"{timing_line}{policy_line}</a>"
+        f"{timing_line}</a>"
     )
 
 
@@ -470,7 +489,8 @@ def _tab(index: int, run: IndexEntry, *, active: bool) -> str:
 
 def render_task_page(task: LibraryTask, *, refresh_seconds: int | None = None) -> str:
     """Return one self-contained HTML page tabbing between the task's run pages."""
-    policies = sorted({run.policy for run in task.runs if run.policy})
+    policies = _policy_names(task.runs)
+    heading = _labeled_instruction(task.instruction, policies)
     badges = (
         "".join(f'<span class="badge">{_escape(policy)}</span>' for policy in policies)
         if policies
@@ -514,7 +534,7 @@ def render_task_page(task: LibraryTask, *, refresh_seconds: int | None = None) -
 <body>
 <header><div class="header-inner">
   <a class="back" href="index.html">&larr; Task library</a>
-  <h1>{_escape(task.instruction)}</h1>
+  <h1>{heading}</h1>
   <div class="meta">{stats}</div>
   {timing_row}
   {badges_row}

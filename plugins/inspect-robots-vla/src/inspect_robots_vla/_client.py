@@ -73,6 +73,9 @@ def _encode_payload(
     state: np.ndarray,
     task: str,
     request_id: int,
+    *,
+    replay_proprioception_json: str | None = None,
+    source_observation_timestamp_ns: int | None = None,
 ) -> bytes:
     """Build the /submit NPZ body, converting HWC uint8 frames to CHW.
 
@@ -103,7 +106,11 @@ def _encode_payload(
                     f"invalid /submit payload: image {key!r} must be HWC uint8 RGB, "
                     f"got shape {frame.shape} dtype {frame.dtype}"
                 )
-            fields[f"image{index}"] = _resize_nearest(frame, VLA_IMAGE_SIZE).transpose(2, 0, 1)
+            fields[f"image{index}"] = _resize_with_pad(frame, VLA_IMAGE_SIZE)
+    if replay_proprioception_json is not None:
+        fields["replay_proprioception_json"] = np.asarray(replay_proprioception_json)
+    if source_observation_timestamp_ns is not None:
+        fields["source_observation_timestamp_ns"] = np.int64(source_observation_timestamp_ns)
     buffer = io.BytesIO()
     np.savez(buffer, **fields)
     return buffer.getvalue()
@@ -153,12 +160,33 @@ def _error_detail(body: bytes) -> str:
     return ""
 
 
-def _resize_nearest(frame: np.ndarray, size: int) -> np.ndarray:
-    """Nearest-neighbor resize an HWC uint8 frame to (size, size)."""
-    height, width = frame.shape[:2]
-    rows = (np.linspace(0, height - 1, size)).astype(np.intp)
-    cols = (np.linspace(0, width - 1, size)).astype(np.intp)
-    return frame[rows][:, cols]
+def _resize_with_pad(frame: np.ndarray, size: int) -> np.ndarray:
+    """Resize one HWC uint8 frame to CHW ``(3, size, size)`` like the ROS client.
+
+    Same call as ``image_to_chw_uint8`` / ``resize_with_pad``: scale by
+    ``max(width / size, height / size)``, ``F.interpolate`` bilinear with
+    ``align_corners=False``, then pad the shortfall with zeros on the top
+    and the left. A 640x480 frame becomes 224 wide and 168 tall, with 56
+    black rows above it.
+    """
+    import torch
+    from torch.nn import functional as F
+
+    height, width = int(frame.shape[0]), int(frame.shape[1])
+    ratio = max(width / size, height / size)
+    resized_height = max(int(height / ratio), 1)
+    resized_width = max(int(width / ratio), 1)
+    chw = torch.from_numpy(np.asarray(frame, dtype=np.float32).transpose(2, 0, 1) / 255.0)
+    resized = F.interpolate(
+        chw.unsqueeze(0),
+        size=(resized_height, resized_width),
+        mode="bilinear",
+        align_corners=False,
+    ).squeeze(0)
+    canvas = torch.zeros((int(chw.shape[0]), size, size), dtype=torch.float32)
+    canvas[:, size - resized_height :, size - resized_width :] = resized
+    array = canvas.detach().cpu().numpy()
+    return np.clip(np.rint(array * 255.0), 0, 255).astype(np.uint8)
 
 
 def _has_request_id(body: bytes) -> bool:
@@ -203,9 +231,18 @@ class VlaClient:
         task: str,
         *,
         request_id: int,
+        replay_proprioception_json: str | None = None,
+        source_observation_timestamp_ns: int | None = None,
     ) -> None:
         """POST one observation to /submit; the result arrives via poll()."""
-        body = _encode_payload(images, state, task, request_id)
+        body = _encode_payload(
+            images,
+            state,
+            task,
+            request_id,
+            replay_proprioception_json=replay_proprioception_json,
+            source_observation_timestamp_ns=source_observation_timestamp_ns,
+        )
         try:
             response = self._http.post(
                 "/submit", content=body, headers={"Content-Type": _NPZ_CONTENT_TYPE}
@@ -252,14 +289,25 @@ class VlaClient:
         task: str,
         *,
         request_id: int,
+        replay_proprioception_json: str | None = None,
+        source_observation_timestamp_ns: int | None = None,
     ) -> VlaChunk:
         """Submit, then poll until this request's result (or the deadline).
 
         Results older than ``request_id`` (a straggler from a previous
         request) are skipped; exceeding ``poll_timeout_s`` raises
-        VlaServiceError.
+        VlaServiceError. ``replay_proprioception_json`` is the field the
+        UMI replay service on :10054 requires; the live model server ignores
+        its absence.
         """
-        self.submit(images, state, task, request_id=request_id)
+        self.submit(
+            images,
+            state,
+            task,
+            request_id=request_id,
+            replay_proprioception_json=replay_proprioception_json,
+            source_observation_timestamp_ns=source_observation_timestamp_ns,
+        )
         deadline = time.monotonic() + self._poll_timeout_s
         while True:
             chunk = self.poll(request_id - 1)  # the service compares strictly greater

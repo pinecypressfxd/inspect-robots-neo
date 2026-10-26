@@ -9,7 +9,7 @@ from dataclasses import dataclass, field
 from inspect_robots_evo.executor import Executor, MotionPort, SubmitResult
 from inspect_robots_evo.workspace import Workspace
 
-_ACTING = ("read_file", "write_file", "submit_code", "done", "give_up")
+_ACTING = ("read_file", "write_file", "step_code", "done", "give_up")
 _REFLECT = ("read_file", "write_file")
 
 
@@ -42,8 +42,48 @@ class ScriptedModel:
         return turn
 
 
+_DESCRIPTIONS = {
+    "read_file": "Read one workspace file. path is relative to the workspace root.",
+    "write_file": "Write one workspace file. path is relative to the workspace root.",
+    "step_code": "Run scripts/env.py step(code) on submission/solution.py.",
+    "done": "Stop because the task is finished. This does not move the robot.",
+    "give_up": "Stop without finishing. This does not move the robot.",
+}
+
+_SCHEMAS: dict[str, dict[str, object]] = {
+    "read_file": {
+        "type": "object",
+        "properties": {"path": {"type": "string"}},
+        "required": ["path"],
+        "additionalProperties": False,
+    },
+    "write_file": {
+        "type": "object",
+        "properties": {
+            "path": {"type": "string"},
+            "text": {"type": "string"},
+        },
+        "required": ["path", "text"],
+        "additionalProperties": False,
+    },
+    "step_code": {"type": "object", "properties": {}, "additionalProperties": False},
+    "done": {"type": "object", "properties": {}, "additionalProperties": False},
+    "give_up": {"type": "object", "properties": {}, "additionalProperties": False},
+}
+
+
 def _tools(names: tuple[str, ...]) -> list[dict[str, object]]:
-    return [{"type": "function", "function": {"name": name}} for name in names]
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": _DESCRIPTIONS[name],
+                "parameters": _SCHEMAS[name],
+            },
+        }
+        for name in names
+    ]
 
 
 def _stopped(abort: object) -> bool:
@@ -76,6 +116,7 @@ class Episode:
         """跑到 done, give_up, 预算用尽或中断, 然后按模式收尾."""
         submits = 0
         reason = "give_up"
+        self._opening()
         while True:
             if _stopped(abort):
                 reason = "aborted"
@@ -91,28 +132,50 @@ class Episode:
             if turn.name == "done":
                 reason = "done"
                 break
-            if turn.name == "read_file":
-                text = self.workspace.read_file(str(turn.arguments["path"]))
-                self._note(turn, text)
-            elif turn.name == "write_file":
-                path = str(turn.arguments["path"])
-                self.workspace.write_file(path, str(turn.arguments["text"]))
-                self._note(turn, "wrote")
-            elif turn.name == "submit_code":
-                result = Executor(
-                    self.workspace,
-                    self.port,
-                    observation_provider=self.observation_provider,
-                ).run(abort)
-                self._store(submits, result)
-                submits += 1
-                detail = f"{result.status} {result.value or ''} {result.traceback or ''}"
-                self._note(turn, detail)
-                if result.status == "aborted":
-                    reason = "aborted"
-                    break
+            try:
+                if turn.name == "read_file":
+                    text = self.workspace.read_file(str(turn.arguments["path"]))
+                    self._note(turn, text)
+                elif turn.name == "write_file":
+                    path = str(turn.arguments["path"])
+                    self.workspace.write_file(path, str(turn.arguments["text"]))
+                    self._note(turn, "wrote")
+                elif turn.name == "step_code":
+                    result = Executor(
+                        self.workspace,
+                        self.port,
+                        observation_provider=self.observation_provider,
+                    ).run(abort)
+                    self._store(submits, result)
+                    submits += 1
+                    detail = f"{result.status} {result.value or ''} {result.traceback or ''}"
+                    self._note(turn, detail)
+                    if result.status == "aborted":
+                        reason = "aborted"
+                        break
+            except Exception as exc:
+                self._note(turn, f"error: {exc}")
         self._close(model)
         return EpisodeResult(reason, submits)
+
+    def _opening(self) -> None:
+        if self.messages:
+            return
+        task_path = self.workspace.root / "instruction.md"
+        if not task_path.is_file():
+            task_path = self.workspace.root / "task.md"
+        task = task_path.read_text(encoding="utf-8") if task_path.is_file() else ""
+        self.messages.append(
+            {
+                "role": "user",
+                "content": (
+                    "Read primitives/primitives.md and scripts/env.py. "
+                    "Edit submission/solution.py so solve() returns a str and calls step(action). "
+                    "Call step_code to run it.\n"
+                    f"Task:\n{task}"
+                ),
+            }
+        )
 
     def _close(self, model: ScriptedModel) -> None:
         if self.outcome_reader is None:
@@ -137,7 +200,7 @@ class Episode:
                 self._note(turn, "wrote")
 
     def _store(self, index: int, result: SubmitResult) -> None:
-        dest = self.workspace.root / "submits" / f"{index:03d}"
+        dest = self.workspace.root / "observations" / f"{index:03d}"
         dest.mkdir(parents=True, exist_ok=True)
         payload = {
             "status": result.status,

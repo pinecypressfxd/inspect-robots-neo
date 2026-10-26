@@ -1,15 +1,17 @@
 """Mission console: localhost web page with live cameras and run control.
 
 Serves one self-contained operator page (three camera tiles, status bar,
-two-step start, stop, verdicts, live reasoning feed) plus a JSON API over
+two-step start, stop, live reasoning feed) plus a JSON API over
 stdlib ``http.server``. Start spawns the attended eval on a pty:
 
     uv run --no-sync inspect-robots "<instruction>" --policy agent \\
         -P model=gpt-5.6-luna -P base_url=<url> -P api_key_env=EXPLABS_API_KEY \\
-        -P max_speed_frac=<frac> --embodiment nero -E operator_reset_confirm=False
+        -P max_speed_frac=<frac> --embodiment nero -E operator_reset_confirm=False \\
+        --grader none
 
-The pty is the ONLY control channel: stop writes ``/stop``, verdicts write
-``/y`` ``/n`` ``/p`` (or ``/skip``); the child process is never signalled.
+The pty is the control channel: stop writes ``/stop``. Spawned runs use
+``--grader none``, so the child never asks for a y/n/p verdict. Stop and Home
+then end the child process group so the next Start is accepted.
 Run from the repo root so ``uv run`` resolves the workspace and ``logs/`` is
 the shared eval-log directory; the child inherits this process's environment,
 so ``EXPLABS_API_KEY`` comes from the operator's shell that launched the
@@ -34,6 +36,7 @@ import os
 import pty
 import re
 import select
+import signal
 import subprocess
 import sys
 import threading
@@ -61,6 +64,12 @@ DEFAULT_API_KEY_ENV = "EXPLABS_API_KEY"
 DEFAULT_MAX_SPEED_FRAC = 0.05
 DEFAULT_HISTORY_URL = "http://127.0.0.1:8300/"
 DEFAULT_LOG_DIR = "/tmp"
+_TRACE_DIR = Path(__file__).resolve().parents[3] / ".inspect_traces"
+_BRAND_DIR = Path(__file__).resolve().with_name("brand")
+_BRAND_FILES = {
+    "/brand/ground.jpg": ("image/jpeg", "ground.jpg"),
+    "/brand/mark.png": ("image/png", "mark.png"),
+}
 STREAM_FPS = 10.0
 FRAME_MAX_AGE_S = 1.0
 #: Bounded in-memory tail of each run's pty output (consumed by the feed API).
@@ -76,7 +85,6 @@ FEED_SOURCES = 512
 MAX_LINE_BYTES = 65_536
 #: How long a pty control write may wait for the terminal to become writable.
 PTY_WRITE_TIMEOUT_S = 2.0
-VERDICT_CHOICES = frozenset({"y", "n", "p", "skip"})
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 #: Binding these means "every interface", so the Host allowlist accepts any name.
 _WILDCARD_HOSTS = frozenset({"0.0.0.0", "::", ""})
@@ -84,6 +92,10 @@ _ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 _LOG_LINE_RE = re.compile(r"^log:\s*(\S.*)$")
 _CAM_PATH_RE = re.compile(r"^/cam/(?P<name>[^/]+)\.mjpg$")
 _FRAME_ROUTE_RE = re.compile(r"^/frame/(?P<name>[^/]+)\.jpg$")
+_CHEST_TAKE_RE = re.compile(r"^chest_\d{8}-\d{6}\.mp4$")
+_PREVIEW_ROUTE_RE = re.compile(r"^/preview/(?P<name>[A-Za-z0-9_-]+)\.jpg$")
+_PREVIEW_DIR = Path("/tmp/nero-console-preview")
+_PREVIEW_CAMERAS = frozenset({"left_rgbd", "right_rgbd", "chest_rgbd"})
 _FRAME_FILE_RE = re.compile(r"^(?P<prefix>.+)_(?P<step>\d{6,})\.npy$")
 _SAFE_RE = re.compile(r"[^A-Za-z0-9._-]+")
 _SCHEME_RE = re.compile(r"^[a-z][a-z0-9+.-]*://")
@@ -383,6 +395,7 @@ class CameraPool:
         self._lock = threading.Lock()
         self._started: set[str] = set()
         self._was_started: frozenset[str] = frozenset()
+        self._held: dict[str, np.ndarray] = {}
 
     @property
     def names(self) -> tuple[str, ...]:
@@ -417,12 +430,33 @@ class CameraPool:
         """True while at least one camera is open (devices held)."""
         return bool(self._started)
 
+    def held_frame(self, name: str) -> np.ndarray | None:
+        """Last frame copied before the devices were released, if one exists."""
+        import numpy as np
+
+        frame = self._held.get(name)
+        if frame is None:
+            return None
+        return np.array(frame, copy=True)
+
     def stop(self) -> None:
-        """Stop every camera and release its device; idempotent, best effort."""
+        """Stop every camera and release its device; idempotent, best effort.
+
+        The last frame of each open camera is kept so the tiles can stay up
+        until the run has stored a frame of its own.
+        """
+        import numpy as np
+
         with self._lock:
             self._was_started = frozenset(self._started)
             self._started.clear()
-            for camera in self._cameras.values():
+            for name, camera in self._cameras.items():
+                try:
+                    frame, _stamp = camera.read(max_age_s=60.0)
+                except Exception:
+                    frame = None
+                if frame is not None:
+                    self._held[name] = np.array(frame, copy=True)
                 try:
                     camera.stop()
                 except Exception as exc:  # hardware teardown must never abort the rest
@@ -458,15 +492,20 @@ class _Run:
         self.tail: deque[str] = deque(maxlen=RING_LINES)
         self.log_path: str | None = None
         self.exit_code: int | None = None
+        self.stop_line = "/stop"
+        self.kick: str | None = None
+        self.kicked = False
+        self.tiles = "frames"
 
 
 class RunManager:
     """Own the single active run: spawn it on a pty, drain it, report status.
 
-    The pty is the only control channel (``/stop`` and verdict lines written
-    to the master fd, each one echoed to the console's stdout); no signal is
-    ever sent to the child. It ends by itself, and sees terminal EOF when the
-    console exits.
+    The pty is the only control channel (``/stop`` written to the master fd,
+    echoed to the console's stdout); no signal is ever sent to the child.
+    Spawned runs pass ``--grader none``, so the process exits when the
+    episode ends instead of waiting for a y/n/p verdict. It sees terminal
+    EOF when the console exits.
     """
 
     def __init__(
@@ -493,6 +532,12 @@ class RunManager:
         prepare: Callable[[], None] | None = None,
         rollback: Callable[[], None] | None = None,
         suffix: list[str] | None = None,
+        command: list[str] | None = None,
+        env: Mapping[str, str] | None = None,
+        cwd: str | None = None,
+        stop_line: str = "/stop",
+        kick: str | None = None,
+        tiles: str = "frames",
     ) -> str | None:
         """Spawn one run for ``instruction``; return an error message or None.
 
@@ -503,6 +548,17 @@ class RunManager:
         page can recover instead of sitting idle with dead tiles.
         """
         with self._lock:
+            self._adopt_exit_code()
+            if self._run is not None and self._run.exit_code is None and self._stop_requested:
+                finish = True
+            else:
+                finish = False
+        if finish:
+            error = self.force_end()
+            if error is not None:
+                return error
+        with self._lock:
+            self._adopt_exit_code()
             if self._run is not None and self._run.exit_code is None:
                 return "a run is already active; stop it or wait for it to end"
             if prepare is not None:
@@ -534,7 +590,8 @@ class RunManager:
                 return self._fail_start(rollback, f"could not allocate the run terminal: {exc}")
             effective = suffix if suffix is not None else self._suffix
             resolved = [arg.replace("__INSTRUCTION__", instruction) for arg in effective]
-            command = [*self._prefix, instruction, *resolved]
+            if command is None:
+                command = [*self._prefix, instruction, *resolved]
             try:
                 # ValueError joins OSError: an embedded NUL byte in the
                 # instruction (or any argument) fails the exec, not the console.
@@ -544,6 +601,8 @@ class RunManager:
                     stdout=slave_fd,
                     stderr=slave_fd,
                     start_new_session=True,
+                    cwd=cwd,
+                    env=None if env is None else dict(env),
                 )
             except (OSError, ValueError) as exc:
                 log_file.close()
@@ -559,6 +618,9 @@ class RunManager:
                 started_at=time.time(),
                 run_id=self._spawn_count,
             )
+            run.stop_line = stop_line
+            run.kick = kick
+            run.tiles = tiles if tiles in ("frames", "preview") else "frames"
             self._run = run
             self._last_error = None
         threading.Thread(target=self._drain, args=(run,), daemon=True, name="run-drain").start()
@@ -600,12 +662,18 @@ class RunManager:
             buffer += text
             while "\n" in buffer:
                 line, buffer = buffer.split("\n", 1)
+                kick_now = False
                 with self._lock:
                     run.tail.append(line)
                     detected = _detect_log_path(line)
                     if detected is not None:
                         run.log_path = detected
                         print(f"[console] run log: {detected}")
+                    if run.kick and not run.kicked and "Commands: s=start" in line:
+                        run.kicked = True
+                        kick_now = True
+                if kick_now and run.kick is not None:
+                    self.write_line(run.kick)
             if len(buffer) > MAX_LINE_BYTES:
                 dropped = len(buffer)
                 marker = f"[line exceeds {MAX_LINE_BYTES} bytes; dropped {dropped}]"
@@ -649,7 +717,10 @@ class RunManager:
         return None
 
     def status(self) -> dict[str, Any]:
-        """Snapshot for ``/api/status``: state, instruction, log, exit, error."""
+        """Snapshot for ``/api/status``: state, instruction, log, exit, error.
+
+        After Stop is accepted and before the child exits, state is ``stopping``.
+        """
         with self._lock:
             run = self._run
             error = self._last_error
@@ -661,13 +732,17 @@ class RunManager:
                     "exit_code": None,
                     "error": error,
                 }
+            self._adopt_exit_code()
             state = "running" if run.exit_code is None else "ended"
+            if state == "running" and self._stop_requested:
+                state = "stopping"
             snapshot = {
                 "state": state,
                 "instruction": run.instruction,
                 "log": run.log_path,
                 "exit_code": run.exit_code,
                 "error": error,
+                "tiles": run.tiles if state in ("running", "stopping") else "live",
             }
             started_at = run.started_at
         if snapshot["log"] is None and state == "running":
@@ -681,55 +756,70 @@ class RunManager:
         self._stop_requested = True
 
     def homing_allowed(self) -> bool:
-        """True when no run is active, or its episode was stopped (verdict wait)."""
+        """True when no run is active, or Stop was already sent and it is exiting."""
         run = self.status()
         return run.get("state") not in ("running", "external") or self._stop_requested
 
-    def skip_pending_verdict(self, *, timeout_s: float = 5.0, poll_s: float = 0.2) -> str | None:
-        """Resolve a pending verdict with ``skip`` so a new run can start.
+    def _adopt_exit_code(self) -> None:
+        """Store a polled exit code so a dead child does not stay ``running``.
 
-        Verdicts are optional for the operator: a stopped run parked at the
-        y/n/prompt is answered with the prompt's own ``skip`` choice, then
-        given a bounded window to finish before the caller proceeds.
-        Returns an error message only when the run will not exit.
+        The drain thread also records the code after the terminal closes. A
+        grandchild can keep that read blocked after the direct child has
+        already exited; ``poll`` notices the exit without waiting for EOF.
+        Caller holds ``self._lock``.
         """
-        run = self.current()
-        if run is None or run.get("exit_code") is not None or not self._stop_requested:
-            return None
-        error = self.write_line("skip")
-        if error is not None:
-            return error
-        deadline = time.monotonic() + timeout_s
-        while time.monotonic() < deadline:
-            run = self.current()
-            if run is None or run.get("exit_code") is not None:
-                return None
-            time.sleep(poll_s)
-        return "the previous run is still closing after skipping its verdict; try Start again"
+        run = self._run
+        if run is None or run.exit_code is not None:
+            return
+        code = run.process.poll()
+        if code is not None:
+            run.exit_code = code
+
+    def _signal_group(self, pid: int, sig: int) -> None:
+        """Signal the run's session, then the direct child if it has no group."""
+        try:
+            os.killpg(pid, sig)
+        except ProcessLookupError:
+            return
+        except OSError:
+            os.kill(pid, sig)
+
+    def _active_stop_line(self) -> str:
+        """Key the active run expects. ROS origin mode quits on ``q``."""
+        with self._lock:
+            run = self._run
+            if run is None:
+                return "/stop"
+            return run.stop_line
 
     def force_end(self) -> str | None:
-        """Emergency end for a wedged run: ``/stop``, terminate, then kill.
+        """End the active run: ``/stop``, then the whole process group.
 
-        This is the one sanctioned departure from the pty-only control model,
-        reserved for the operator's emergency stop: a run that stopped reading
-        its terminal (the stuck-bring-up failure mode) must still end.
+        Stop and Home both use this. The child is its own session, so a
+        signal to that one process can leave a grandchild holding the
+        terminal and the arms. The group signal is what lets the next Start
+        proceed.
         """
-        self.write_line("/stop")
+        self.write_line(self._active_stop_line())
         with self._lock:
+            self._adopt_exit_code()
             run = self._run
             if run is None or run.exit_code is not None:
                 return None
+            pid = run.process.pid
             try:
-                run.process.terminate()
+                self._signal_group(pid, signal.SIGTERM)
             except OSError as exc:
                 return f"could not terminate the run: {exc}"
         try:
             run.process.wait(timeout=5)
         except subprocess.TimeoutExpired:
             with contextlib.suppress(OSError):
-                run.process.kill()
+                self._signal_group(pid, signal.SIGKILL)
             with contextlib.suppress(subprocess.TimeoutExpired):
                 run.process.wait(timeout=5)
+        with self._lock:
+            self._adopt_exit_code()
         return None
 
     def current(self) -> dict[str, Any] | None:
@@ -781,16 +871,15 @@ class RunManager:
         """Best-effort graceful end for an active run: one ``/stop`` line.
 
         Runs when the console exits. Never a signal: the write lets the eval
-        end its episode through the normal verdict flow; afterwards the
-        closing terminal gives it EOF.
+        end its episode, and the closing terminal then gives it EOF.
         """
         with self._lock:
             run = self._run
             if run is None or run.exit_code is not None:
                 return
-            error = _write_pty(run.master_fd, b"/stop\n")
+            error = _write_pty(run.master_fd, f"{run.stop_line}\n".encode())
         if error is None:
-            print("[console] pty -> /stop (console shutdown)")
+            print(f"[console] pty -> {run.stop_line} (console shutdown)")
         else:
             print(f"[console] shutdown /stop write failed: {error}; the run will see EOF")
 
@@ -817,6 +906,9 @@ class RunFeed:
         self._wire_notes: dict[str, int] = {}
         self._wire_seq_next = -1
         self._max_seq = 0
+        # First time each tool seq was observed. A page refresh asks for seq 0
+        # and would otherwise stamp every old call with the refresh clock.
+        self._seen_at: dict[int, str] = {}
 
     def build(self, run: Mapping[str, Any] | None, since: int) -> dict[str, Any]:
         """Return one feed snapshot for ``run`` filtered to messages after ``since``."""
@@ -838,7 +930,9 @@ class RunFeed:
             for message in messages:
                 for tool in message.get("tools") or []:
                     entry = dict(tool)
-                    entry["seq"] = message["seq"]
+                    seq = message["seq"]
+                    entry["seq"] = seq
+                    entry["at"] = self._clock(seq, entry.get("at"))
                     tools.append(entry)
             if wire is not None and wire.get("tool"):
                 # One stable seq per distinct wire note: a fresh seq per poll
@@ -858,6 +952,7 @@ class RunFeed:
                         "arguments": "",
                         "note": str(wire.get("note", "")),
                         "seq": wire_seq,
+                        "at": self._clock(wire_seq, None),
                     }
                 )
             return {
@@ -890,6 +985,24 @@ class RunFeed:
                 stamped.append({"seq": seq, **message})
         del stamped[:-FEED_MESSAGES]
         return stamped
+
+    def _clock(self, seq: int, logged: object) -> str:
+        """The tool's own clock, else the first time this seq was observed.
+
+        A logged ``at`` (written when the planner accepted the call) wins, so
+        a console restart still shows that time. Otherwise the first feed
+        poll that sees the seq freezes the clock; later polls, including a
+        page refresh that asks for every seq again, reuse it.
+        """
+        if isinstance(logged, str) and logged:
+            return logged
+        found = self._seen_at.get(seq)
+        if found is None:
+            if len(self._seen_at) >= FEED_SOURCES:
+                self._seen_at.pop(next(iter(self._seen_at)))
+            found = time.strftime("%H:%M:%S")
+            self._seen_at[seq] = found
+        return found
 
 
 def _started_at_of(run: Mapping[str, Any]) -> float:
@@ -1086,6 +1199,9 @@ def _compact_message(raw: object) -> dict[str, Any] | None:
             if not isinstance(arguments, str):
                 arguments = json.dumps(arguments)
             tools.append({"name": str(function.get("name", "unknown")), "arguments": arguments})
+    if isinstance(raw.get("at"), str):
+        for tool in tools:
+            tool["at"] = raw["at"]
     if tools:
         message["tools"] = tools
     return message
@@ -1227,12 +1343,17 @@ class MissionRequestHandler(BaseHTTPRequestHandler):
             status["cameras_live"] = self.server.pool.any_started()
             status["arm_tool"] = self.server.armtools.describe()
             status["lerobot"] = self.server.exports.describe()
-            status["verdict_pending"] = self.server.runs._stop_requested
+            if self.server.chest is not None:
+                status["chest"] = self.server.chest.status()
+            if self.server.last_video:
+                status["last_video"] = self.server.last_video
             root = getattr(self.server, "evo_workspace", None)
             outcome_missing = root is not None and not (Path(root) / "outcome.json").is_file()
             waiting = root is not None and (Path(root) / "awaiting_outcome").is_file()
-            if self.server.default_policy == "evo" and outcome_missing and (
-                status["state"] == "ended" or waiting
+            if (
+                self.server.default_policy == "evo"
+                and outcome_missing
+                and (status["state"] == "ended" or waiting)
             ):
                 status["needs_outcome"] = True
             self._send_json(200, status)
@@ -1247,10 +1368,20 @@ class MissionRequestHandler(BaseHTTPRequestHandler):
             if match is not None:
                 self._serve_frame(match.group("name"))
                 return
+            match = _PREVIEW_ROUTE_RE.fullmatch(path)
+            if match is not None:
+                self._serve_preview(match.group("name"))
+                return
+            if path == "/api/chest-takes":
+                self._api_chest_takes()
+                return
+            if path in _BRAND_FILES:
+                self._serve_brand(path)
+                return
             self._send_plain(404, "not found\n")
 
     def do_POST(self) -> None:
-        """Route POST: start, stop, and verdict, behind the Host/Origin gate."""
+        """Route POST: start, stop, home, and estop, behind the Host/Origin gate."""
         if not self._request_allowed():
             self._send_plain(
                 403,
@@ -1263,12 +1394,16 @@ class MissionRequestHandler(BaseHTTPRequestHandler):
             self._api_start()
         elif path == "/api/stop":
             self._api_stop()
-        elif path == "/api/verdict":
-            self._api_verdict()
         elif path == "/api/home":
             self._api_home()
         elif path == "/api/estop":
             self._api_estop()
+        elif path == "/api/chest":
+            self._api_chest()
+        elif path == "/api/speech":
+            self._api_speech()
+        elif path == "/api/guide":
+            self._api_guide()
         elif path == "/api/evo-outcome":
             self._api_evo_outcome()
         else:
@@ -1289,18 +1424,11 @@ class MissionRequestHandler(BaseHTTPRequestHandler):
         if body is None:
             return
         instruction = body.get("instruction")
-        if not isinstance(instruction, str) or not instruction.strip():
-            self._send_json(400, {"error": "instruction must be non-empty"})
-            return
+        if not isinstance(instruction, str):
+            instruction = ""
         policy = body.get("policy", self.server.default_policy)
-        if policy not in ("agent", "hybrid", "vla", "evo"):
+        if policy not in ("agent", "harness", "vla", "vla-replay", "vla-origin", "evo"):
             self._send_json(400, {"error": f"unknown policy {policy!r}"})
-            return
-        # Verdicts are optional: a run parked at the y/n/prompt after Stop is
-        # skipped automatically instead of blocking the next Start.
-        skip_error = self.server.runs.skip_pending_verdict()
-        if skip_error is not None:
-            self._send_json(409, {"error": skip_error})
             return
         self.server.default_policy = policy
         if policy == "evo":
@@ -1311,57 +1439,130 @@ class MissionRequestHandler(BaseHTTPRequestHandler):
             stamp = time.strftime("%Y%m%d-%H%M%S")
             root = Path(".inspect_traces") / "evo" / f"{stamp}_{os.urandom(2).hex()}"
             root.mkdir(parents=True, exist_ok=True)
+            coder = body.get("evo_coder", getattr(self.server.launch_args, "evo_coder", "astra"))
+            if coder not in ("astra", "glm"):
+                self._send_json(400, {"error": "evo_coder must be astra or glm"})
+                return
             self.server.launch_args.evo_mode = mode
+            self.server.launch_args.evo_coder = coder
             self.server.launch_args.evo_workspace = str(root.resolve())
             self.server.evo_workspace = root
-        suffix = self.server.build_suffix(policy)
-        error = self.server.runs.start(
-            instruction.strip(),
-            prepare=self.server.pool.stop,
-            rollback=self.server.pool.restart,
-            suffix=suffix,
-        )
+        if start_reads_video_goal(policy, body.get("intake")):
+            try:
+                self._use_named_take(body)
+                instruction = self._agent_video_goal()
+            except Exception as exc:
+                print(f"[console] start rejected: {exc}")
+                self._send_json(400, {"error": str(exc)})
+                return
+            suffix = self.server.build_suffix(policy)
+            error = self.server.runs.start(
+                instruction,
+                prepare=self.server.pool.stop,
+                rollback=self.server.pool.restart,
+                suffix=suffix,
+            )
+            if error is not None:
+                print(f"[console] start rejected: {error}")
+                self._send_json(400, {"error": error})
+                return
+            self._send_json(200, {"ok": True, "prompt": instruction, "policy": policy})
+            return
+        if not instruction.strip():
+            print("[console] start rejected: instruction must be non-empty")
+            self._send_json(400, {"error": "instruction must be non-empty"})
+            return
+        if policy == "vla-origin":
+            try:
+                launch = vla_origin_launch(instruction.strip())
+            except OSError as exc:
+                self._send_json(400, {"error": str(exc)})
+                return
+            error = self.server.runs.start(
+                instruction.strip(),
+                prepare=self.server.pool.stop,
+                rollback=self.server.pool.restart,
+                command=launch.command,
+                env=launch.env,
+                cwd=launch.cwd,
+                stop_line="q",
+                kick="s",
+                tiles="preview",
+            )
+        else:
+            suffix = self.server.build_suffix(policy)
+            error = self.server.runs.start(
+                instruction.strip(),
+                prepare=self.server.pool.stop,
+                rollback=self.server.pool.restart,
+                suffix=suffix,
+            )
         if error is not None:
+            print(f"[console] start rejected: {error}")
             self._send_json(400, {"error": error})
             return
         self._send_json(200, {"ok": True})
 
-    def _api_stop(self) -> None:
-        """Graceful stop: the ``/stop`` console line on the run's terminal."""
-        body = self._read_json_body()
-        if body is None:
-            return
-        error = self.server.runs.write_line("/stop")
-        if error is None:
-            self.server.runs.mark_stop_requested()
-            self._send_json(200, {"ok": True})
-        else:
-            self._send_json(400, {"error": error})
+    def _agent_video_goal(self) -> str:
+        """Ask Astra for the goal paragraph of the latest chest demonstration."""
+        from inspect_robots_agent._llm import Provider
+        from inspect_robots_agent._responses import ResponsesClient
+        from inspect_robots_intake.contract import IntakeError, VideoInput
+        from inspect_robots_intake.video import MessageVideoPrompter
 
-    def _api_verdict(self) -> None:
-        """Write ``/<choice>`` for ``{"choice": "y"|"n"|"p"|"skip"}``."""
+        path = self.server.last_video
+        if not isinstance(path, str) or not path:
+            raise IntakeError("record a video prompt before start")
+        api_key = os.environ.get(self.server.api_key_env, "")
+        if not api_key:
+            raise IntakeError(f"{self.server.api_key_env} is not set")
+        client = ResponsesClient(
+            Provider(
+                base_url=self.server.base_url,
+                api_key=api_key,
+                model=self.server.model,
+            )
+        )
+
+        def complete(messages: list[dict[str, Any]]) -> str:
+            reply = client.complete(messages, tools=[])
+            return reply.content or ""
+
+        return MessageVideoPrompter(complete).to_prompt(VideoInput(path))
+
+    def _api_guide(self) -> None:
+        """Send one live observation into the running agent or harness memory."""
         body = self._read_json_body()
         if body is None:
             return
-        choice = body.get("choice")
-        if not isinstance(choice, str) or choice.strip().lower() not in VERDICT_CHOICES:
-            self._send_json(400, {"error": "choice must be one of: y, n, p, skip"})
+        try:
+            line = guide_line(body.get("text"))
+        except ValueError as exc:
+            self._send_json(400, {"error": str(exc)})
             return
-        bare = choice.strip().lower()
-        # The mid-run console grammar takes /y lines, but the post-trial verdict
-        # prompt reads bare words; write the bare form, which the prompt wants
-        # (and the mid-run grammar treats as ordinary operator feedback if the
-        # episode is somehow still running).
-        line = "partial" if bare == "p" else bare
         error = self.server.runs.write_line(line)
+        if error is not None:
+            self._send_json(400, {"error": error})
+            return
+        self._send_json(200, {"ok": True, "text": line})
+
+    def _api_stop(self) -> None:
+        """Stop the episode and free the slot so Start can run again."""
+        body = self._read_json_body()
+        if body is None:
+            return
+        self.server.runs.mark_stop_requested()
+        error = self.server.runs.force_end()
         if error is None:
             self._send_json(200, {"ok": True})
         else:
             self._send_json(400, {"error": error})
 
     def _api_home(self) -> None:
-        """Home both arms via arm_tools.py; refused while a run is active."""
-        error = self.server.armtools.home(run_active=not self.server.runs.homing_allowed())
+        """Home both arms, ending any run that is still holding Start."""
+        end_error = self.server.runs.force_end()
+        still_active = self.server.runs.status().get("state") in ("running", "stopping")
+        error = end_error or self.server.armtools.home(run_active=still_active)
         if error is None:
             self._send_json(200, {"ok": True})
         else:
@@ -1389,9 +1590,7 @@ class MissionRequestHandler(BaseHTTPRequestHandler):
         if root is None:
             self._send_json(400, {"error": "no evo workspace"})
             return
-        (Path(root) / "outcome.json").write_text(
-            json.dumps({"success": success}), encoding="utf-8"
-        )
+        (Path(root) / "outcome.json").write_text(json.dumps({"success": success}), encoding="utf-8")
         if self.server.runs.status().get("state") == "ended":
             self._reflect_stopped_evo(Path(root))
         self._send_json(200, {"ok": True})
@@ -1402,25 +1601,144 @@ class MissionRequestHandler(BaseHTTPRequestHandler):
         if str(plugin) not in sys.path:
             sys.path.insert(0, str(plugin))
         try:
-            from inspect_robots_agent._llm import Provider
-            from inspect_robots_agent._responses import ResponsesClient
             from inspect_robots_evo.episode import reflect_dir
-            from inspect_robots_evo.policy import ResponsesModel
+            from inspect_robots_evo.policy import coding_model
             from inspect_robots_evo.workspace import Workspace
         except ImportError as exc:
             print(f"[console] evo reflection skipped: {exc}")
             return
         args = self.server.launch_args
         workspace = Workspace(root, getattr(args, "evo_mode", "playground"))
-        client = ResponsesClient(
-            Provider(
-                base_url=args.base_url,
-                api_key=os.environ.get(args.api_key_env, ""),
-                model=args.model,
-                wire="responses",
-            )
+        model_name, base_url, key_env, wire = _evo_endpoint(args)
+        reflect_dir(
+            workspace,
+            coding_model(
+                model_name,
+                base_url=base_url,
+                api_key=os.environ.get(key_env, ""),
+                wire=wire,
+            ),
         )
-        reflect_dir(workspace, ResponsesModel(client))
+
+    def _chest_takes(self) -> list[str]:
+        """Saved chest clips, newest first. Names stay inside the intake directory."""
+        recorder = self.server.chest
+        if recorder is None or not recorder.directory.is_dir():
+            return []
+        files = [
+            path
+            for path in recorder.directory.glob("chest_*.mp4")
+            if path.is_file() and _CHEST_TAKE_RE.fullmatch(path.name)
+        ]
+        files.sort(key=lambda path: path.stat().st_mtime, reverse=True)
+        return [path.name for path in files]
+
+    def _api_chest_takes(self) -> None:
+        """List saved video prompts for the Video prompt menu."""
+        self._send_json(200, {"takes": self._chest_takes()})
+
+    def _use_named_take(self, body: Mapping[str, Any]) -> None:
+        """Point the next video analysis at one saved clip, when the page named it."""
+        from inspect_robots_intake.contract import IntakeError
+
+        name = body.get("video")
+        if not isinstance(name, str) or not name:
+            return
+        recorder = self.server.chest
+        if (
+            recorder is None
+            or not _CHEST_TAKE_RE.fullmatch(name)
+            or not (recorder.directory / name).is_file()
+        ):
+            raise IntakeError(f"unknown video prompt {name!r}")
+        self.server.last_video = str(recorder.directory / name)
+
+    def _api_chest(self) -> None:
+        """Start or stop one chest take for the video-to-prompt intake."""
+        recorder = self.server.chest
+        if recorder is None:
+            self._send_json(503, {"error": "video intake recorder is not available"})
+            return
+        from inspect_robots_intake.contract import IntakeError
+
+        if recorder.status()["recording"]:
+            try:
+                video = recorder.stop()
+            except IntakeError as exc:
+                self._send_json(409, {"error": str(exc), **recorder.status()})
+                return
+            body = recorder.status()
+            body["video"] = video.path
+            self.server.last_video = video.path
+            self._send_json(200, body)
+            return
+        run = self.server.runs.current()
+        run_state = None if run is None else run.get("state")
+        if run_state in ("running", "external") or self.server.runs.status()["state"] in (
+            "running",
+            "stopping",
+        ):
+            self._send_json(
+                409,
+                {"error": "stop the run before recording; it holds the chest camera"},
+            )
+            return
+        try:
+            recorder.start(self._read_chest)
+        except IntakeError as exc:
+            self._send_json(409, {"error": str(exc), **recorder.status()})
+            return
+        self._send_json(200, recorder.status())
+
+    def _api_speech(self) -> None:
+        """Transcribe one microphone clip and return the text for the prompt box."""
+        transcriber = self.server.speech
+        if transcriber is None:
+            self._send_json(503, {"error": "speech intake is not available"})
+            return
+        header = self.headers.get("Content-Length")
+        try:
+            length = int(header) if header else 0
+        except ValueError:
+            self._send_json(400, {"error": "invalid Content-Length"})
+            return
+        if length <= 0 or length > 8_000_000:
+            self._send_json(400, {"error": "speech clip must be between 1 byte and 8 MB"})
+            return
+        audio = self.rfile.read(length)
+        speech_dir = _TRACE_DIR / "speech_intake"
+        speech_dir.mkdir(parents=True, exist_ok=True)
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        webm = speech_dir / f"speech_{stamp}.webm"
+        wav = speech_dir / f"speech_{stamp}.wav"
+        webm.write_bytes(audio)
+        try:
+            converted = subprocess.run(
+                ["ffmpeg", "-y", "-i", str(webm), "-ar", "16000", "-ac", "1", str(wav)],
+                capture_output=True,
+                check=False,
+            )
+        except FileNotFoundError:
+            self._send_json(503, {"error": "ffmpeg is not installed"})
+            return
+        if converted.returncode != 0 or not wav.is_file():
+            detail = converted.stderr.decode("utf-8", errors="replace")[-300:].strip()
+            self._send_json(409, {"error": detail or "could not convert the speech clip to wav"})
+            return
+        from inspect_robots_intake.contract import IntakeError, SpeechInput
+
+        try:
+            text = transcriber.transcribe(SpeechInput(str(wav)))
+        except IntakeError as exc:
+            self._send_json(409, {"error": str(exc)})
+            return
+        self._send_json(200, {"text": text, "wav": str(wav)})
+
+    def _read_chest(self) -> npt.NDArray[np.uint8]:
+        """Newest chest RGB frame. The intake recorder samples this; it does not open the device."""
+        camera = self.server.pool.start("chest_rgbd")
+        frame, _stamp = camera.read(max_age_s=FRAME_MAX_AGE_S)
+        return frame
 
     def _request_allowed(self) -> bool:
         """Whether the request is addressed to this console, not a foreign origin.
@@ -1526,6 +1844,8 @@ class MissionRequestHandler(BaseHTTPRequestHandler):
         if run is not None and run.get("state") in ("running", "external"):
             frame, error = self._stored_run_frame(run, name)
             if frame is None:
+                frame = self.server.pool.held_frame(name)
+            if frame is None:
                 self._send_plain(503, f"camera {name!r} unavailable: {error}\n")
                 return
         else:
@@ -1538,6 +1858,18 @@ class MissionRequestHandler(BaseHTTPRequestHandler):
             payload = _encode_jpeg(frame)
         except (OSError, RuntimeError, ValueError) as exc:
             self._send_plain(503, f"camera {name!r} frame encode failed: {exc}\n")
+            return
+        self._send_bytes(200, "image/jpeg", payload, {"Cache-Control": "no-store"})
+
+    def _serve_preview(self, name: str) -> None:
+        """Serve the 1 Hz JPEG the ROS recorder overwrites for this camera."""
+        if name not in _PREVIEW_CAMERAS:
+            self._send_plain(404, "not found\n")
+            return
+        try:
+            payload = (_PREVIEW_DIR / f"{name}.jpg").read_bytes()
+        except OSError:
+            self._send_plain(404, "preview not ready\n")
             return
         self._send_bytes(200, "image/jpeg", payload, {"Cache-Control": "no-store"})
 
@@ -1581,6 +1913,15 @@ class MissionRequestHandler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": "body must be a JSON object"})
             return None
         return parsed
+
+    def _serve_brand(self, path: str) -> None:
+        """Serve one cropped company mark. Unknown names never reach this method."""
+        content_type, name = _BRAND_FILES[path]
+        file_path = _BRAND_DIR / name
+        if not file_path.is_file():
+            self._send_plain(404, "not found\n")
+            return
+        self._send_bytes(200, content_type, file_path.read_bytes())
 
     def _send_json(self, code: int, payload: Mapping[str, Any]) -> None:
         """Send one JSON response."""
@@ -1645,6 +1986,13 @@ class MissionServer(ThreadingHTTPServer):
         self.allowed_hosts = frozenset({host} | loopback)
         self.wildcard_host = host in _WILDCARD_HOSTS
         self.bound_port = address[1]
+        self.base_url = DEFAULT_BASE_URL
+        self.api_key_env = DEFAULT_API_KEY_ENV
+        self.model = DEFAULT_MODEL
+        self.last_video: str | None = None
+        # Video-intake take recorder. The chest device stays in this console;
+        # the file it writes is a VideoInput for inspect-robots-intake.
+        self.chest: Any = None
 
 
 _PAGE_HEAD = """<!doctype html>
@@ -1654,21 +2002,120 @@ _PAGE_HEAD = """<!doctype html>
 <title>Nero mission console</title>
 <style>
   :root { color-scheme: dark; }
-  body { font-family: system-ui, sans-serif; margin: 0; background: #101418; color: #e8e8e8; }
-  header { display: flex; justify-content: space-between; align-items: baseline;
-           padding: 10px 16px; background: #171d24; border-bottom: 1px solid #2a3340; }
-  h1 { font-size: 18px; margin: 0; }
-  header a { color: #7fb4ff; }
-  #status { padding: 8px 16px; background: #0b0e12; border-bottom: 1px solid #2a3340;
-            font-family: ui-monospace, monospace; font-size: 13px; white-space: pre-wrap; }
-  .cams { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; padding: 8px; }
-  .cams figure { margin: 0; background: #000; border: 1px solid #2a3340; }
-  .cams img { width: 100%; aspect-ratio: 4 / 3; object-fit: contain; display: block;
-              background: #000; }
-  .cams figcaption { font-size: 12px; padding: 3px 6px; color: #9aa7b4; background: #171d24; }
-  .cams figcaption .mode { float: right; color: #5f7186; }
-  .controls { display: flex; gap: 8px; padding: 8px 16px; align-items: center; flex-wrap: wrap; }
-  #estop { background: #b00; color: #fff; font-weight: bold; }
+  body {
+    margin: 0; color: #f4f4f2;
+    font-family: "Noto Sans CJK SC", "Noto Sans", sans-serif;
+    background: #070708 url("/brand/ground.jpg") center top / cover no-repeat fixed;
+  }
+  header {
+    display: flex; align-items: center; gap: 12px; height: 52px; padding: 0 16px;
+    background: rgba(7, 7, 8, 0.72); border-bottom: 2px solid #f4f4f2;
+  }
+  .mark { height: 28px; width: auto; background: #f4f4f2; padding: 4px 5px; }
+  h1 { margin: 0; font-size: 16px; font-weight: 700; letter-spacing: 0.14em; }
+  header a {
+    margin-left: auto; color: #f4f4f2; text-decoration: none;
+    border-bottom: 1px solid #f4f4f2;
+  }
+  .stage { display: grid; grid-template-columns: 84px minmax(0, 1fr); align-items: start; }
+  .stage-main { min-width: 0; }
+  .signal {
+    display: flex; flex-direction: column; align-items: center; gap: 10px;
+    position: sticky; top: 8px; margin: 8px 0 8px 12px; padding: 4px 0;
+  }
+  .housing {
+    display: flex; flex-direction: column; gap: 8px; padding: 10px 8px;
+    border-radius: 18px; background: #0c0c0c; border: 1px solid #3a3a3a;
+  }
+  .housing i {
+    width: 22px; height: 22px; border-radius: 50%; display: block;
+    background: #1c1c1c; box-shadow: inset 0 0 0 1px #111;
+  }
+  #signallabel { font-size: 13px; font-weight: 700; letter-spacing: 0.12em; color: #f4f4f2; }
+  .signal[data-kind="idle"] .housing i:nth-child(2) { background: #5c4a14; }
+  .signal[data-kind="run"] .housing i:nth-child(3) {
+    background: #30d158; box-shadow: 0 0 14px #30d158;
+  }
+  .signal[data-kind="wait"] .housing i:nth-child(2) {
+    background: #ffd60a; box-shadow: 0 0 14px #ffd60a;
+  }
+  .signal[data-kind="stop"] .housing i:nth-child(1) {
+    background: #ff453a; box-shadow: 0 0 14px #ff453a;
+  }
+  .signal[data-kind="fault"] .housing i:nth-child(1) {
+    background: #ff453a; box-shadow: 0 0 14px #ff453a;
+  }
+  @media (prefers-reduced-motion: no-preference) {
+    .signal[data-kind="wait"] .housing i:nth-child(2),
+    .signal[data-kind="fault"] .housing i:nth-child(1) {
+      animation: lamp 0.9s steps(2, end) infinite;
+    }
+  }
+  @keyframes lamp { 50% { opacity: 0.2; box-shadow: none; } }
+  #status {
+    padding: 8px 16px; background: rgba(7, 7, 8, 0.55); color: #c8c8c6;
+    font-family: ui-monospace, monospace; font-size: 13px; white-space: pre-wrap;
+  }
+  .cams { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; padding: 0 12px 8px; }
+  .cams figure { margin: 0; background: #000; }
+  .cams img {
+    width: 100%; aspect-ratio: 4 / 3; object-fit: contain; display: block; background: #000;
+  }
+  .cams figcaption {
+    font-size: 13px; padding: 6px 8px 6px; color: #f4f4f2; background: rgba(7, 7, 8, 0.72);
+    border-top: 2px solid #f4f4f2;
+  }
+  .cams figcaption .mode { float: right; color: #8a8a88; }
+  .deck { display: grid; gap: 10px; padding: 12px 16px 4px; }
+  .taskrow, .actions { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  #policy, #instruction, #guide {
+    height: 42px; box-sizing: border-box; background: #111; color: #f4f4f2;
+    border: 1px solid #2c2c2c; border-radius: 2px; padding: 0 10px; font: inherit;
+  }
+  #instruction, #guide { flex: 1; min-width: 240px; }
+  #policy:focus, #instruction:focus, #guide:focus, button:focus-visible {
+    outline: 2px solid #f4f4f2; outline-offset: 2px;
+  }
+  button {
+    height: 42px; padding: 0 16px; font: inherit; font-weight: 600; border-radius: 2px;
+    cursor: pointer; border: 1px solid transparent;
+  }
+  #start { background: #f4f4f2; color: #111; }
+  #start:hover { background: #fff; }
+  #start.armed, #start.armed:hover { background: #111; color: #f4f4f2; }
+  #stop, #cancel { background: transparent; color: #f4f4f2; border-color: #3a3a3a; }
+  #speech, #chest, #home {
+    background: #141414; color: #f4f4f2; border-color: #2a2a2a;
+  }
+  .video-pop { position: relative; display: flex; }
+  #video-more {
+    width: 28px; padding: 0; background: #141414; color: #8a8a88;
+    border: 1px solid #2a2a2a; border-left: 0;
+  }
+  #video-more.armed { color: #f4f4f2; border-color: #f4f4f2; }
+  .video-takes {
+    position: absolute; top: 46px; right: 0; z-index: 6; min-width: 280px;
+    max-height: 240px; overflow: auto; background: #111; border: 1px solid #3a3a3a;
+  }
+  .video-takes button {
+    display: block; width: 100%; height: 34px; padding: 0 12px; text-align: left;
+    background: transparent; color: #f4f4f2; border: 0; border-radius: 0;
+    font-size: 13px; font-weight: 500;
+  }
+  .video-takes .empty { color: #8a8a88; padding: 10px 12px; }
+  #estop {
+    margin-left: auto; min-width: 112px; background: #111; color: #ff3b30;
+    border-color: #ff3b30; font-weight: 700;
+  }
+  #estop:hover { background: #ff3b30; color: #111; }
+  button.armed { background: #111; color: #f4f4f2; box-shadow: inset 0 -3px 0 #f4f4f2; }
+  .video-takes button.armed { box-shadow: inset 3px 0 0 #f4f4f2; }
+  #speech.armed, #chest.armed { border-color: #f4f4f2; }
+  button:disabled { opacity: 0.38; cursor: default; }
+  @media (prefers-reduced-motion: no-preference) {
+    #start.armed { animation: slit 1.4s steps(2, end) infinite; }
+  }
+  @keyframes slit { 50% { box-shadow: inset 0 -3px 0 transparent; } }
   .tool-line { margin: 2px 0; overflow-wrap: anywhere; }
   .tool-name { font-weight: bold; padding: 0 6px; border-radius: 4px;
     background: #d7dce3; color: #20242b; margin-right: 4px; }
@@ -1678,75 +2125,102 @@ _PAGE_HEAD = """<!doctype html>
   .tool-line.tool-done .tool-name,
   .tool-line.tool-give_up .tool-name { background: #a12a2a; color: #fff; }
   .tool-args { color: #d6dee8; font-family: ui-monospace, monospace; font-size: 12px; }
-  .tool-note { color: #9aa7b4; }
-  #home:disabled { opacity: 0.5; }
-  #instruction { flex: 1; min-width: 260px; padding: 8px; background: #171d24; color: inherit;
-                 border: 1px solid #2a3340; border-radius: 4px; }
-  button { padding: 8px 14px; font-size: 14px; border: 1px solid #2a3340; border-radius: 4px;
-           background: #202a35; color: inherit; cursor: pointer; }
-  button.armed { background: #7a2e2e; border-color: #b04a4a; font-weight: bold; }
-  button:disabled { opacity: 0.5; cursor: default; }
-  #verdicts { display: flex; gap: 6px; }
+  .tool-note { color: #8a8a88; }
+  #usetrained { background: transparent; color: #f4f4f2; border-color: #f4f4f2; }
   #feedpanel { margin: 8px 16px 24px; display: grid; gap: 8px; }
   .feedgrid { display: grid; grid-template-columns: 2fr 1fr 1fr; gap: 8px; }
-  .panel { border: 1px solid #2a3340; border-radius: 4px; background: #141a21; }
-  .panel h2 { font-size: 11px; margin: 0; padding: 5px 8px; color: #9aa7b4;
-              text-transform: uppercase; letter-spacing: .07em; background: #171d24;
-              border-bottom: 1px solid #2a3340; }
-  .panelbody { padding: 8px; font-size: 13px; color: #c8d2dd; white-space: pre-wrap;
-               overflow-wrap: anywhere; max-height: 170px; overflow-y: auto; }
-  #feed { padding: 8px; font-size: 13px; color: #9aa7b4; max-height: 340px; overflow-y: auto; }
-  .msg { margin: 0 0 8px; padding-left: 8px; border-left: 3px solid #2a3340; }
-  .msg-user { border-left-color: #3d6aa5; }
-  .msg-assistant { border-left-color: #7a55b5; }
-  .msg-system { border-left-color: #5f7186; }
-  .msg-role { display: inline-block; font-size: 11px; text-transform: uppercase;
-              letter-spacing: .07em; color: #9aa7b4; margin-right: 8px; }
-  .msg-text { white-space: pre-wrap; overflow-wrap: anywhere; color: #c8d2dd; }
-  .msg-tool { font-family: ui-monospace, monospace; font-size: 12px; color: #bd9bed;
-              white-space: pre-wrap; overflow-wrap: anywhere; }
-  @media (max-width: 900px) { .feedgrid { grid-template-columns: 1fr; } }
+  .panel { border: 1px solid rgba(255, 255, 255, 0.08); background: rgba(7, 7, 8, 0.62); }
+  .panel h2 {
+    font-size: 13px; font-weight: 600; margin: 0; padding: 8px 10px; color: #f4f4f2;
+    background: transparent; border-bottom: 1px solid #222;
+  }
+  .panelbody {
+    padding: 8px; font-size: 13px; color: #d4d4d2; white-space: pre-wrap;
+    overflow-wrap: anywhere; max-height: 170px; overflow-y: auto;
+  }
+  #feed { padding: 8px; font-size: 13px; color: #bdbdbd; max-height: 340px; overflow-y: auto; }
+  .msg { margin: 0 0 8px; padding-left: 8px; border-left: 2px solid #2a2a2a; }
+  .msg-user { border-left-color: #f4f4f2; }
+  .msg-assistant { border-left-color: #8a8a88; }
+  .msg-system { border-left-color: #3a3a3a; }
+  .msg-role { display: inline-block; font-size: 12px; color: #8a8a88; margin-right: 8px; }
+  .msg-text { white-space: pre-wrap; overflow-wrap: anywhere; color: #f4f4f2; }
+  .msg-tool {
+    font-family: ui-monospace, monospace; font-size: 12px; color: #d4d4d2;
+    white-space: pre-wrap; overflow-wrap: anywhere;
+  }
+  @media (max-width: 900px) {
+    .feedgrid, .cams { grid-template-columns: 1fr; }
+    header { height: auto; min-height: 52px; padding: 8px 16px; }
+    #estop { margin-left: 0; }
+  }
 </style>
 </head>
 <body>
 <header>
-  <h1>Nero mission console</h1>
+  <img class="mark" src="/brand/mark.png" alt="">
+  <h1>MATRIX</h1>
   <a href="__HISTORY_URL__" target="_blank" rel="noopener">Run history</a>
 </header>
+<div class="stage">
+<div id="signal" class="signal" data-kind="idle" role="status" aria-live="polite">
+  <span class="housing" aria-hidden="true"><i></i><i></i><i></i></span>
+  <span id="signallabel">空闲</span>
+</div>
+<div class="stage-main">
 <div id="status">connecting...</div>
 <div class="cams">
 """
 
 _PAGE_TAIL = """</div>
-<div class="controls">
+</div>
+</div>
+<div class="deck">
+  <div class="taskrow">
   <select id="policy">
     <option value="agent">agent (LLM only)</option>
-    <option value="hybrid">hybrid (LLM + VLA)</option>
+    <option value="harness">harness (HarnessVLA)</option>
     <option value="vla">vla (VLA only)</option>
+    <option value="vla-replay">vla-replay (same VLA only, recorded episode)</option>
+    <option value="vla-origin">vla-origin (ROS inference script)</option>
     <option value="evo">evo (EmbodiedEvo)</option>
   </select>
   <select id="evomode">
     <option value="playground">playground</option>
     <option value="test">test</option>
   </select>
+  <select id="evocoder">
+    <option value="astra">astra</option>
+    <option value="glm">glm 5.3</option>
+  </select>
   <input id="instruction" placeholder="instruction for the run" autocomplete="off">
   <button id="usetrained" hidden
     title="replace the instruction with the checkpoint's exact training task string">
     use trained task string</button>
+  </div>
+  <div class="actions">
+  <input id="guide" placeholder="运行中告诉agent你的观察和经验" autocomplete="off" disabled>
+  <button id="guidesend" type="button" disabled>Send to agent</button>
   <button id="start">Start</button>
   <button id="stop">Stop</button>
   <button id="cancel" hidden>Cancel</button>
+  <button id="speech" title="first press starts the microphone, second press transcribes it">
+    Voice prompt</button>
+  <div class="video-pop" id="videopop">
+  <button id="chest"
+    title="first press records a new chest clip, second press keeps it">
+    Video prompt</button>
+  <button id="video-more" title="choose a saved video prompt" aria-expanded="false">▾</button>
+  <div id="video-takes" class="video-takes" hidden></div>
+  </div>
   <button id="home">Home arms</button>
-  <button id="estop" title="disable both arms and force-end the run">E-STOP</button>
+  <button id="estop" title="end the run; both arms descend under damping until they stop">
+    E-STOP</button>
   <span id="evooutcome" hidden>
     <button id="evoyes" type="button">success</button>
     <button id="evono" type="button">failure</button>
   </span>
-  <span id="verdicts" hidden>
-    <button data-choice="y">verdict y</button>
-    <button data-choice="n">verdict n</button>
-    <button data-choice="p">verdict p</button>
-  </span>
+  </div>
 </div>
 <section id="feedpanel">
   <div class="feedgrid">
@@ -1757,6 +2231,8 @@ _PAGE_TAIL = """</div>
     <div class="panel"><h2>last actions</h2>
       <div class="panelbody" id="actionbody">no data yet</div></div>
   </div>
+  <div class="panel"><h2>stage timing</h2>
+    <div id="timebody" class="panelbody">no timings yet</div></div>
   <div class="panel"><h2>tool timeline</h2>
     <div id="toolbody" class="panelbody">no tool calls yet</div></div>
   <div class="panel"><h2>run terminal (prompts appear here)</h2>
@@ -1765,18 +2241,20 @@ _PAGE_TAIL = """</div>
 </section>
 <script>
 const startBtn = document.getElementById("start");
+const guideInput = document.getElementById("guide");
+const guideSend = document.getElementById("guidesend");
 const stopBtn = document.getElementById("stop");
 const cancelBtn = document.getElementById("cancel");
 const policySel = document.getElementById("policy");
 const input = document.getElementById("instruction");
-// The checkpoint's exact training task string. Pure-vla runs submit the
-// instruction verbatim as the prompt, and the skill policy only tracks its
-// trained phrasing: near-variants (a comma, "then") stall after the trained
-// half. Prefilled for vla runs, always editable.
-const TRAINED_PROMPT = __TRAINED_PROMPT__;
+// Pure vla and vla-origin both submit this sentence as the model task.
+// Near-variants stall, so it is prefilled and one click puts it back.
+const ORIGIN_PROMPT = "please pick the red cup and place it on the black mat";
 function prefillTrainedPrompt() {
-  if (policySel.value === "vla" && input.value.trim() === "" && TRAINED_PROMPT) {
-    input.value = TRAINED_PROMPT;
+  if (policySel.value !== "vla" && policySel.value !== "vla-replay"
+      && policySel.value !== "vla-origin") return;
+  if (input.value.trim() === "" || input.value === __TRAINED_PROMPT__) {
+    input.value = ORIGIN_PROMPT;
   }
 }
 policySel.addEventListener("change", prefillTrainedPrompt);
@@ -1787,25 +2265,50 @@ prefillTrainedPrompt();
 const useTrainedBtn = document.getElementById("usetrained");
 function refreshTrainedHint() {
   useTrainedBtn.hidden = !(
-    policySel.value === "vla" && TRAINED_PROMPT &&
-    input.value.trim() !== "" && input.value !== TRAINED_PROMPT
+    policySel.value === "vla" &&
+    input.value.trim() !== "" && input.value !== ORIGIN_PROMPT
   );
 }
 policySel.addEventListener("change", refreshTrainedHint);
 input.addEventListener("input", refreshTrainedHint);
 useTrainedBtn.addEventListener("click", () => {
-  input.value = TRAINED_PROMPT;
+  input.value = ORIGIN_PROMPT;
   refreshTrainedHint();
   input.focus();
 });
 refreshTrainedHint();
+const speechBtn = document.getElementById("speech");
+const chestBtn = document.getElementById("chest");
+const videoMore = document.getElementById("video-more");
+const takesEl = document.getElementById("video-takes");
+const videoPop = document.getElementById("videopop");
 const statusBox = document.getElementById("status");
-const verdicts = document.getElementById("verdicts");
+const signal = document.getElementById("signal");
+const signalLabel = document.getElementById("signallabel");
+const SIGNAL_TEXT = {run: "运行", wait: "请等待", stop: "已结束", fault: "出错", idle: "空闲"};
+function signalKind(state, status) {
+  const exit = status.exit_code;
+  const chest = status.chest;
+  const failed = !!(stickyError || status.error
+    || (exit !== null && exit !== undefined && exit !== 0));
+  if (state === "running" || state === "external") { return "run"; }
+  if (state === "stopping" || startPending || (chest && chest.recording)) { return "wait"; }
+  if (failed) { return "fault"; }
+  if (state === "ended") { return "stop"; }
+  return "idle";
+}
+function setSignal(state, status) {
+  if (!signal) { return; }
+  const kind = signalKind(state, status);
+  signal.dataset.kind = kind;
+  if (signalLabel) { signalLabel.textContent = SIGNAL_TEXT[kind]; }
+}
 const feedEl = document.getElementById("feed");
 const liveBody = document.getElementById("livebody");
 const wireBody = document.getElementById("wirebody");
 const actionBody = document.getElementById("actionbody");
 let armed = false;
+let startPending = false;
 let lastState = "";
 let lastError = "";
 let tileMode = "live";
@@ -1823,6 +2326,31 @@ function frameUrl(name) {
   return "/frame/" + encodeURIComponent(name) + ".jpg?x=" + Date.now();
 }
 
+function holdVisibleTiles() {
+  for (const img of document.querySelectorAll(".cams img")) {
+    if (!img.naturalWidth || !img.naturalHeight) { continue; }
+    try {
+      const canvas = document.createElement("canvas");
+      canvas.width = img.naturalWidth;
+      canvas.height = img.naturalHeight;
+      const context = canvas.getContext("2d");
+      if (!context) { continue; }
+      context.drawImage(img, 0, 0);
+      img.src = canvas.toDataURL("image/jpeg", 0.85);
+    } catch (err) {
+      // A frame the browser will not copy stays as it is.
+    }
+  }
+}
+
+function showStill(img, blob) {
+  const next = URL.createObjectURL(blob);
+  const previous = img.dataset.objectUrl;
+  img.src = next;
+  img.dataset.objectUrl = next;
+  if (previous) { URL.revokeObjectURL(previous); }
+}
+
 function setTileMode(mode) {
   tileMode = mode;
   for (const img of document.querySelectorAll(".cams img")) {
@@ -1832,19 +2360,48 @@ function setTileMode(mode) {
       img.src = img.dataset.src;
       if (label) { label.textContent = "live stream"; }
     } else if (mode === "frames") {
-      img.src = frameUrl(img.dataset.cam);
       if (label) { label.textContent = "run frame (1s)"; }
+    } else if (mode === "preview") {
+      if (label) { label.textContent = "inference preview (1s)"; }
     } else {
       img.src = "";
       if (label) { label.textContent = ""; }
     }
   }
+  if (mode === "frames") { refreshFrameTiles(); }
+  if (mode === "preview") { refreshPreviewTiles(); }
 }
 
 function refreshFrameTiles() {
   for (const img of document.querySelectorAll(".cams img")) {
-    img.src = frameUrl(img.dataset.cam);
+    fetch(frameUrl(img.dataset.cam)).then((response) => {
+      return response.ok ? response.blob() : null;
+    }).then((blob) => {
+      if (!blob || tileMode !== "frames") { return; }
+      showStill(img, blob);
+    }).catch(() => {});
   }
+}
+
+function refreshPreviewTiles() {
+  for (const img of document.querySelectorAll(".cams img")) {
+    const url = "/preview/" + encodeURIComponent(img.dataset.cam) + ".jpg?x=" + Date.now();
+    fetch(url).then((response) => response.ok ? response.blob() : null).then((blob) => {
+      if (!blob || tileMode !== "preview") { return; }
+      showStill(img, blob);
+    }).catch(() => {});
+  }
+}
+
+function renderTiming(lines) {
+  const body = document.getElementById("timebody");
+  if (!body) { return; }
+  const timing = [];
+  for (const line of lines || []) {
+    const at = line.indexOf("[timing]");
+    if (at !== -1) { timing.push(line.slice(at)); }
+  }
+  body.textContent = timing.length ? timing.join("\\n") : "no timings yet";
 }
 
 function render(status) {
@@ -1855,16 +2412,46 @@ function render(status) {
   if (status.exit_code !== null && status.exit_code !== undefined) {
     parts.push("exit: " + status.exit_code);
   }
-  if (status.error) { parts.push("error: " + status.error); }
-  statusBox.textContent = parts.join("   |   ");
-  verdicts.hidden = state === "idle";
-  document.getElementById("evooutcome").hidden = !status.needs_outcome;
+  if (state === "running" || state === "stopping") { stickyError = ""; }
+  if (stickyError) { parts.push("error: " + stickyError); }
+  else if (status.error) { parts.push("error: " + status.error); }
+  const chest = status.chest;
+  if (chestBtn && chest) {
+    const saved = chest.saved || 0;
+    chestBtn.textContent = chest.recording
+      ? ("Stop video (" + saved + " saved)")
+      : "Video prompt";
+    chestBtn.classList.toggle("armed", !!chest.recording);
+    if (chest.recording && chest.path) { parts.push("chest: " + chest.path); }
+    else if (chest.directory) { parts.push("chest takes: " + chest.directory); }
+    if (chest.error) { parts.push("chest error: " + chest.error); }
+  }
+  if (videoMore) {
+    const recording = !!(chest && chest.recording);
+    videoMore.disabled = state === "running" || recording;
+    videoMore.classList.toggle("armed", !!selectedTake);
+    if (selectedTake) {
+      parts.push("next start reuses " + selectedTake);
+    } else if (intakeKind === "video" && status.last_video) {
+      parts.push("next start uses " + String(status.last_video).split("/").pop());
+    }
+  }
+  setSignal(state, status);
+  if (!startPending) { statusBox.textContent = parts.join("   |   "); }
   stopBtn.disabled = state !== "running";
-  startBtn.disabled = state === "running";
-  if ((state === "running" || state === "external") && tileMode !== "frames") {
-    // The run owns the cameras; switch the tiles to the run's stored frames.
+  document.getElementById("evooutcome").hidden = !status.needs_outcome;
+  startBtn.disabled = startPending || state === "running";
+  const canGuide = state === "running"
+    && (policySel.value === "agent" || policySel.value === "harness");
+  if (guideInput) { guideInput.disabled = !canGuide; }
+  if (guideSend) { guideSend.disabled = !canGuide; }
+  const active = state === "running" || state === "stopping" || state === "external";
+  const wantPreview = active && status.tiles === "preview";
+  if (wantPreview && tileMode !== "preview") {
+    setTileMode("preview");
+  } else if (active && !wantPreview && tileMode !== "frames") {
     setTileMode("frames");
-  } else if (state !== "running" && tileMode === "frames") {
+  } else if (!active && (tileMode === "frames" || tileMode === "preview")) {
     setTileMode("live");
   }
   if ((status.error || "") !== lastError) {
@@ -1961,7 +2548,7 @@ function renderTools(tools) {
     line.dataset.seq = tool.seq;
     const stamp = document.createElement("span");
     stamp.className = "tool-note";
-    stamp.textContent = new Date().toTimeString().slice(0, 8) + " ";
+    stamp.textContent = (tool.at || new Date().toTimeString().slice(0, 8)) + " ";
     line.appendChild(stamp);
     const label = document.createElement("span");
     label.className = "tool-name";
@@ -2001,19 +2588,31 @@ function renderFeed(feed) {
 }
 
 async function post(path, body) {
+  let data = {};
   try {
     const response = await fetch(path, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body || {})
     });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok) { statusBox.textContent = "error: " + (data.error || response.status); }
+    data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      stickyError = data.error || String(response.status);
+      statusBox.textContent = "error: " + stickyError;
+    } else if (path === "/api/start") {
+      stickyError = "";
+    }
+    if (path === "/api/chest" && response.ok && data.video) {
+      selectedTake = null;
+      intakeKind = "video";
+      statusBox.textContent = "video prompt: " + data.video;
+    }
   } catch (err) {
     statusBox.textContent = "error: " + err;
   }
   poll();
   pollFeed();
+  return data;
 }
 
 startBtn.addEventListener("click", () => {
@@ -2025,16 +2624,165 @@ startBtn.addEventListener("click", () => {
     return;
   }
   disarm();
-  post("/api/start", {
+  holdVisibleTiles();
+  const body = {
     instruction: input.value,
     policy: policySel.value,
     evo_mode: document.getElementById("evomode").value,
+    evo_coder: document.getElementById("evocoder").value,
+    intake: intakeKind,
+    video: selectedTake
+  };
+  const videoGoal = (body.policy === "agent" || body.policy === "harness")
+    && body.intake === "video";
+  if (videoGoal) {
+    startPending = true;
+    stickyError = "";
+    statusBox.textContent = "reading the video prompt...";
+    startBtn.disabled = true;
+  }
+  post("/api/start", body).then((data) => {
+    startPending = false;
+    if (data && data.prompt) {
+      input.value = data.prompt;
+      const label = data.policy === "harness" ? "harness goal"
+        : data.policy === "agent" ? "agent goal" : "vla prompt";
+      statusBox.textContent = label + ": " + data.prompt;
+      intakeKind = "speech";
+      selectedTake = null;
+    }
   });
 });
+function sendGuide() {
+  if (!guideInput || guideInput.disabled) { return; }
+  const text = guideInput.value.trim();
+  if (!text) { return; }
+  post("/api/guide", {text: text}).then((data) => {
+    if (data && data.ok) {
+      guideInput.value = "";
+      statusBox.textContent = "sent to the agent: " + data.text;
+    }
+  });
+}
+if (guideSend) { guideSend.addEventListener("click", sendGuide); }
+if (guideInput) {
+  guideInput.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      sendGuide();
+    }
+  });
+}
 cancelBtn.addEventListener("click", disarm);
 input.addEventListener("input", disarm);
 stopBtn.addEventListener("click", () => post("/api/stop", {}));
 document.getElementById("home").addEventListener("click", () => post("/api/home", {}));
+chestBtn.addEventListener("click", () => {
+  if (!chestBtn.classList.contains("armed")) {
+    selectedTake = null;
+    intakeKind = "speech";
+    closeTakes();
+  }
+  post("/api/chest", {});
+});
+function closeTakes() {
+  takesEl.hidden = true;
+  videoMore.setAttribute("aria-expanded", "false");
+}
+async function openTakes() {
+  takesEl.hidden = false;
+  videoMore.setAttribute("aria-expanded", "true");
+  takesEl.replaceChildren();
+  let names = [];
+  try {
+    const response = await fetch("/api/chest-takes");
+    const data = await response.json();
+    names = (data && data.takes) || [];
+  } catch (err) {
+    names = [];
+  }
+  if (!names.length) {
+    const empty = document.createElement("div");
+    empty.className = "empty";
+    empty.textContent = "no saved video prompts";
+    takesEl.append(empty);
+    return;
+  }
+  for (const name of names) {
+    const item = document.createElement("button");
+    item.type = "button";
+    item.textContent = name;
+    if (name === selectedTake) { item.classList.add("armed"); }
+    item.addEventListener("click", (event) => {
+      event.stopPropagation();
+      selectedTake = selectedTake === name ? null : name;
+      intakeKind = selectedTake ? "video" : "speech";
+      closeTakes();
+      poll();
+    });
+    takesEl.append(item);
+  }
+}
+videoMore.addEventListener("click", (event) => {
+  event.stopPropagation();
+  if (takesEl.hidden) { openTakes(); }
+  else { closeTakes(); }
+});
+document.addEventListener("click", (event) => {
+  if (!videoPop.contains(event.target)) { closeTakes(); }
+});
+let speechRecorder = null;
+let speechStream = null;
+let intakeKind = "speech";
+let selectedTake = null;
+let stickyError = "";
+speechBtn.addEventListener("click", async () => {
+  if (speechRecorder && speechRecorder.state === "recording") {
+    speechRecorder.stop();
+    return;
+  }
+  try {
+    speechStream = await navigator.mediaDevices.getUserMedia({audio: true});
+  } catch (err) {
+    statusBox.textContent = "error: microphone unavailable: " + err;
+    return;
+  }
+  const chunks = [];
+  speechRecorder = new MediaRecorder(speechStream);
+  speechRecorder.ondataavailable = (event) => {
+    if (event.data && event.data.size) { chunks.push(event.data); }
+  };
+  speechRecorder.onstop = async () => {
+    if (speechStream) { speechStream.getTracks().forEach((track) => track.stop()); }
+    speechBtn.disabled = true;
+    speechBtn.textContent = "Transcribing...";
+    speechBtn.classList.remove("armed");
+    const blob = new Blob(chunks, {type: speechRecorder.mimeType || "audio/webm"});
+    try {
+      const response = await fetch("/api/speech", {
+        method: "POST",
+        headers: {"Content-Type": blob.type || "application/octet-stream"},
+        body: blob
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) {
+        statusBox.textContent = "error: " + (data.error || response.status);
+      } else {
+        input.value = data.text || "";
+        intakeKind = "speech";
+        selectedTake = null;
+        statusBox.textContent = "voice prompt: " + input.value;
+      }
+    } catch (err) {
+      statusBox.textContent = "error: " + err;
+    }
+    speechBtn.disabled = false;
+    speechBtn.textContent = "Voice prompt";
+  };
+  speechRecorder.start();
+  speechBtn.textContent = "Stop voice";
+  speechBtn.classList.add("armed");
+});
 document.getElementById("estop").addEventListener("click", () => post("/api/estop", {}));
 document.getElementById("evoyes").addEventListener("click", () => {
   post("/api/evo-outcome", { success: true });
@@ -2042,17 +2790,17 @@ document.getElementById("evoyes").addEventListener("click", () => {
 document.getElementById("evono").addEventListener("click", () => {
   post("/api/evo-outcome", { success: false });
 });
-for (const btn of verdicts.querySelectorAll("button")) {
-  btn.addEventListener("click", () => post("/api/verdict", { choice: btn.dataset.choice }));
-}
 
 async function poll() {
   try {
     const response = await fetch("/api/status");
     render(await response.json());
     if (tileMode === "frames") { refreshFrameTiles(); }
+    else if (tileMode === "preview") { refreshPreviewTiles(); }
   } catch (err) {
     statusBox.textContent = "connection lost: " + err;
+    if (signal) { signal.dataset.kind = "fault"; }
+    if (signalLabel) { signalLabel.textContent = SIGNAL_TEXT.fault; }
   }
 }
 
@@ -2065,6 +2813,7 @@ async function pollFeed() {
     if (pty) {
       const lines = feed.pty_tail || [];
       pty.textContent = lines.length ? lines.join("\\n") : "no output yet";
+      renderTiming(lines);
     }
     if (typeof feed.seq === "number" && feed.seq > since) { since = feed.seq; }
   } catch (err) {
@@ -2079,6 +2828,31 @@ setInterval(pollFeed, 1000);
 </body>
 </html>
 """
+
+
+def guide_line(text: object) -> str:
+    """One operator observation safe to write on the run's console channel.
+
+    Slash lines are episode commands. Collapsing whitespace keeps the line a
+    single message the policy stores.
+    """
+    if not isinstance(text, str):
+        raise ValueError("guidance must be non-empty")
+    cleaned = " ".join(text.split())
+    if not cleaned:
+        raise ValueError("guidance must be non-empty")
+    if cleaned.startswith("/"):
+        raise ValueError("guidance cannot start with /")
+    return cleaned[:240]
+
+
+def start_reads_video_goal(policy: str, intake: object) -> bool:
+    """True when Start must turn the recorded demonstration into the trial goal.
+
+    Agent and harness plan from that paragraph. A pure VLA run keeps the
+    typed sentence, because a free-form paragraph stalls the checkpoint.
+    """
+    return policy in ("agent", "harness") and intake == "video"
 
 
 def _trained_prompt() -> str:
@@ -2123,11 +2897,85 @@ def render_page(camera_names: Sequence[str], history_url: str, trained_prompt: s
     return (head + tiles + tail).encode("utf-8")
 
 
+_RLTOKEN = Path("/home/dell/fengxuedong/projects/neo_manipulation/.worktree/RLtoken")
+_ORIGIN_CONFIG = (
+    _RLTOKEN / "neo_manipulation/evaluation/robot_itl_evaluation/config/ros2_nero_inference.yaml"
+)
+_ORIGIN_SCRIPT = _RLTOKEN / "scripts/eval/robot_itl_evaluation/run_ros2_real_robot_inference.sh"
+
+
+class _VlaOriginLaunch:
+    """Argv, env, and cwd for one ROS inference script run."""
+
+    def __init__(self, command: list[str], env: dict[str, str], cwd: str) -> None:
+        self.command = command
+        self.env = env
+        self.cwd = cwd
+
+
+def overlay_direct_http_task(text: str, task: str) -> str:
+    """Replace the live direct_http task and leave every other task line."""
+    lines = text.splitlines(keepends=True)
+    in_direct_http = False
+    replaced = False
+    rendered: list[str] = []
+    quoted = json.dumps(task)
+    for line in lines:
+        body = line.lstrip(" ")
+        indent = len(line) - len(body)
+        key = body.rstrip("\n")
+        if indent <= 6 and key.endswith(":"):
+            in_direct_http = key.startswith("direct_http:")
+        if in_direct_http and not replaced and key.startswith("task:"):
+            newline = "\n" if line.endswith("\n") else ""
+            rendered.append(f"{' ' * indent}task: {quoted}{newline}")
+            replaced = True
+            continue
+        rendered.append(line)
+    if not replaced:
+        raise ValueError("direct_http task key was not found in the ROS inference config")
+    return "".join(rendered)
+
+
+def vla_origin_launch(task: str) -> _VlaOriginLaunch:
+    """Point the ROS inference script at a copy of the yaml with this task."""
+    if not _ORIGIN_SCRIPT.is_file():
+        raise OSError(f"ROS inference script is missing: {_ORIGIN_SCRIPT}")
+    if not _ORIGIN_CONFIG.is_file():
+        raise OSError(f"ROS inference config is missing: {_ORIGIN_CONFIG}")
+    destination = Path("/tmp") / f"vla-origin-{os.getpid()}.yaml"
+    destination.write_text(
+        overlay_direct_http_task(_ORIGIN_CONFIG.read_text(encoding="utf-8"), task),
+        encoding="utf-8",
+    )
+    env = os.environ.copy()
+    env["ROS2_NERO_EVAL_CONFIG"] = str(destination)
+    env["ROS2_COORDINATOR_STDIN"] = "/dev/stdin"
+    return _VlaOriginLaunch(
+        command=["bash", str(_ORIGIN_SCRIPT)],
+        env=env,
+        cwd=str(_RLTOKEN),
+    )
+
+
 def _policy_namespace(base: argparse.Namespace, policy: str) -> argparse.Namespace:
     """Copy of ``base`` with ``policy`` swapped, for on-demand suffix builds."""
     patched = argparse.Namespace(**vars(base))
     patched.policy = policy
     return patched
+
+
+_GLM_MODEL = "glm-5.3"
+_GLM_BASE_URL = "https://api.z.ai/api/anthropic/v1"
+_GLM_KEY_ENV = "ANTHROPIC_AUTH_TOKEN"
+
+
+def _evo_endpoint(namespace: argparse.Namespace) -> tuple[str, str, str, str]:
+    """Return model, base URL, key env, and wire for the selected evo coder."""
+    coder = getattr(namespace, "evo_coder", "astra")
+    if coder == "glm":
+        return _GLM_MODEL, _GLM_BASE_URL, _GLM_KEY_ENV, "anthropic"
+    return namespace.model, namespace.base_url, namespace.api_key_env, "responses"
 
 
 def build_command(namespace: argparse.Namespace) -> tuple[list[str], list[str]]:
@@ -2138,24 +2986,27 @@ def build_command(namespace: argparse.Namespace) -> tuple[list[str], list[str]]:
     prefix = ["uv", "run", "--no-sync", "inspect-robots", "run", "--instruction"]
     common = [
         "--store-frames",
+        "--grader",
+        "none",
         "--embodiment",
         "nero",
         "-E",
         "operator_reset_confirm=False",
     ]
     if namespace.policy == "evo":
+        model_name, base_url, key_env, wire = _evo_endpoint(namespace)
         suffix = [
             *common,
             "--policy",
             "evo",
             "-P",
-            f"model={namespace.model}",
+            f"model={model_name}",
             "-P",
-            "wire=responses",
+            f"wire={wire}",
             "-P",
-            f"base_url={namespace.base_url}",
+            f"base_url={base_url}",
             "-P",
-            f"api_key_env={namespace.api_key_env}",
+            f"api_key_env={key_env}",
             "-P",
             f"mode={namespace.evo_mode}",
             "-P",
@@ -2163,15 +3014,14 @@ def build_command(namespace: argparse.Namespace) -> tuple[list[str], list[str]]:
             "--max-steps",
             "0",
         ]
-    elif namespace.policy in ("vla", "umi-replay"):  # selector value or the pre-rename alias
-        # Pure VLA baseline: the same instruction is the trained prompt. The
-        # embodiment also paces at the checkpoint's trained action_freq
-        # (10 Hz): at the nero default 30 Hz the 20-step chunk plays in 0.7 s
-        # instead of the trained 2.0 s and then stalls for the next inference
-        # round trip, which reads as fast-then-frozen motion. The step budget
-        # scales with the pace: the adhoc default of 300 steps is 30 s at
-        # 10 Hz and cuts the trained task after its first half (the longest
-        # demonstration runs 1086 frames), so vla runs get 1800 (180 s).
+    elif namespace.policy in ("vla", "vla-replay", "umi-replay"):
+        # Pure VLA baseline, paced like ros2_nero_inference.yaml: the base
+        # checkpoints emit 30 Hz actions (action_hz), and schedule=tracked
+        # asks for the next chunk at 5 Hz without stopping the arm, then
+        # blends it after the 300 ms preview across the 300 ms transition.
+        # Joint step matches the yaml (1.0 rad); agent keeps the 0.1 default.
+        # 5400 steps is 180 s at 30 Hz, the same wall budget the 10 Hz
+        # open-loop runs used.
         suffix = [
             *common,
             "--policy",
@@ -2179,17 +3029,41 @@ def build_command(namespace: argparse.Namespace) -> tuple[list[str], list[str]]:
             "-P",
             "prompt=__INSTRUCTION__",
             "-P",
-            "control_hz=10",
+            "schedule=tracked",
+            "-P",
+            "control_hz=30",
             "-E",
-            "control_hz=10",
+            "control_hz=200",
+            "-E",
+            "max_joint_step_rad=1.0",
+            "-E",
+            f"trace_dir={_TRACE_DIR}",
+            "-P",
+            f"trace_dir={_TRACE_DIR}",
             "--max-steps",
-            "1800",
+            "5400",
         ]
-    elif namespace.policy == "hybrid":
+        if namespace.policy == "vla-replay":
+            # Same embodiment, 30 Hz tracked playback, and 200 Hz IK as vla.
+            # Only the action source changes: the UMI replay service.
+            suffix.extend(
+                [
+                    "-P",
+                    "replay=true",
+                    "-P",
+                    "base_url=http://127.0.0.1:10054",
+                ]
+            )
+    elif namespace.policy == "harness":
+        # The Kingsoft gateway exposes ChatGPT-6 Astra as --model (mog-10-a).
+        # Same 30 Hz clock as the base checkpoints. move_to splits a motion by
+        # per-tick distance, so 10 Hz played those ticks three times slower
+        # than the embodiment was tuned for. The delegated chunk is the model's
+        # 30 Hz waypoints. 5400 steps is 180 s.
         suffix = [
             *common,
             "--policy",
-            "hybrid",
+            namespace.policy,
             "-P",
             f"model={namespace.model}",
             "-P",
@@ -2198,9 +3072,15 @@ def build_command(namespace: argparse.Namespace) -> tuple[list[str], list[str]]:
             f"base_url={namespace.base_url}",
             "-P",
             f"api_key_env={namespace.api_key_env}",
+            "-P",
+            "control_hz=30",
+            "-E",
+            "control_hz=30",
+            "--max-steps",
+            "5400",
         ]
     else:
-        # Same gateway constraint the hybrid branch carries: kspmas rejects
+        # Same gateway constraint the harness branch carries: kspmas rejects
         # function tools + reasoning_effort on /chat/completions, so agent
         # runs also speak /v1/responses.
         suffix = [
@@ -2217,6 +3097,8 @@ def build_command(namespace: argparse.Namespace) -> tuple[list[str], list[str]]:
             f"api_key_env={namespace.api_key_env}",
             "-P",
             f"max_speed_frac={namespace.max_speed_frac:g}",
+            "--max-steps",
+            "0",
         ]
     return prefix, suffix
 
@@ -2262,7 +3144,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--policy",
-        choices=["agent", "hybrid", "vla", "evo"],
+        choices=["agent", "harness", "vla", "vla-replay", "vla-origin", "evo"],
         default="agent",
         help="policy the spawned runs use (agent needs the LLM flags below)",
     )
@@ -2327,11 +3209,38 @@ def main(argv: list[str] | None = None) -> int:
 
     pool = CameraPool(overrides)
     args.evo_workspace = ""
+    args.evo_coder = "astra"
     prefix, suffix = build_command(args)
     exporter = LerobotExporter(Path(__file__).with_name("export_lerobot.py"), Path(args.log_dir))
     runs = RunManager(prefix, suffix, Path(args.log_dir), exporter)
     armtools = ArmToolRunner(Path(__file__).with_name("arm_tools.py"), Path(args.log_dir))
     page_html = render_page(pool.names, args.history_url, _trained_prompt())
+    chest_dir = _TRACE_DIR / "video_intake"
+    # The take belongs to video intake. This script only supplies chest frames.
+    # The plugin is a workspace member that is not an embodiment dependency,
+    # so the console adds its source tree when the env has not installed it.
+    intake_src = Path(__file__).resolve().parents[2] / "inspect-robots-intake" / "src"
+    if str(intake_src) not in sys.path:
+        sys.path.insert(0, str(intake_src))
+    chest_recorder = None
+    speech_transcriber = None
+    try:
+        from inspect_robots_intake.capture import VideoTakeRecorder
+
+        chest_recorder = VideoTakeRecorder(chest_dir)
+    except ImportError as exc:
+        print(f"[console] chest recording unavailable: {exc}")
+    try:
+        from inspect_robots_intake.asr_transcriber import QwenAsrTranscriber
+
+        speech_transcriber = QwenAsrTranscriber(
+            Path("/home/dell/ckpts/qwen3-asr/.venv/bin/python"),
+            Path("/home/dell/ckpts/Qwen3-ASR-1.7B"),
+            intake_src / "inspect_robots_intake" / "qwen_asr_worker.py",
+            log_path=_TRACE_DIR / "speech_intake" / "qwen-asr-worker.log",
+        )
+    except ImportError as exc:
+        print(f"[console] speech intake unavailable: {exc}")
     server = MissionServer(
         (args.host, args.port),
         pool,
@@ -2343,10 +3252,25 @@ def main(argv: list[str] | None = None) -> int:
         lambda policy: build_command(_policy_namespace(args, policy))[1],
     )
     server.launch_args = args
+    server.base_url = args.base_url
+    server.api_key_env = args.api_key_env
+    server.model = args.model
+    server.chest = chest_recorder
+    server.speech = speech_transcriber
     print(f"[console] mission console on http://{args.host}:{args.port}/")
+    if chest_recorder is not None:
+        print(f"[console] chest takes for video intake: {chest_dir}")
+        newest = max(
+            chest_dir.glob("chest_*.mp4"),
+            key=lambda path: path.stat().st_mtime,
+            default=None,
+        )
+        if newest is not None:
+            server.last_video = str(newest)
+            print(f"[console] last video prompt: {newest.name}")
     print(f"[console] cameras: {', '.join(pool.describe())}")
     print(f"[console] start command: {' '.join([*prefix, '<instruction>', *suffix])}")
-    print("[console] control is pty-write only (/stop, /y, /n, /p); the child is never signalled")
+    print("[console] control is pty-write only (/stop); runs use --grader none")
     print(f"[console] runs inherit this shell's environment; {args.api_key_env} must be set here")
     print("[console] POST routes verify Host/Origin against the bound address")
     try:
@@ -2354,6 +3278,15 @@ def main(argv: list[str] | None = None) -> int:
     except KeyboardInterrupt:
         print("\n[console] interrupt; shutting down")
     finally:
+        if server.speech is not None:
+            server.speech.close()
+        if server.chest is not None and server.chest.status()["recording"]:
+            from inspect_robots_intake.contract import IntakeError
+
+            try:
+                server.chest.stop()
+            except IntakeError as exc:
+                print(f"[console] chest recording did not finish: {exc}")
         server.server_close()
         runs.shutdown()
         pool.stop()

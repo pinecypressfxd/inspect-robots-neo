@@ -353,7 +353,7 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="horizon of an --instruction or --auto-task run (default: config or "
-        f"{_ADHOC_MAX_STEPS_FALLBACK}; 0 runs until the policy stops); "
+        f"{_ADHOC_MAX_STEPS_FALLBACK}; pass 0 to run until done or give_up); "
         "invalid with --task",
     )
     p_run.add_argument(
@@ -1756,7 +1756,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
                 name="auto",
                 scenes=[scene],
                 scorer=scorer,
-                max_steps=cast(int, max_steps),
+                max_steps=max_steps,
                 metadata={
                     "adhoc": True,
                     "auto_task": True,

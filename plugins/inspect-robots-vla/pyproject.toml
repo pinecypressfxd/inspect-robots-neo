@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "inspect-robots-vla"
 version = "0.1.0"
-description = "VLA policies for Inspect Robots: the umi-replay policy speaking the :10055 RLT inference wire, and the Astra-planner hybrid that delegates skill segments to it."
+description = "VLA policies for Inspect Robots: the vla policy speaking the :10055 RLT inference wire. The selectable hybrid policy is retired."
 dynamic = ["readme"]
 requires-python = ">=3.10"
 license = "MIT"
@@ -22,11 +22,9 @@ classifiers = [
 # No torch and no vendor SDK: the adapter speaks the serve_rlt_inference HTTP
 # wire (NPZ over httpx), mirroring the "speak the protocol, don't import the
 # package" doctrine of the agent and xpolicylab plugins. scipy is the anchor
-# module's rpy/rot6d math. The hybrid's planner reuses the agent plugin's
-# chat client (AssistantMessage/ToolCall/resolve_provider), the same reuse
-# capx makes, so inspect-robots-agent is a declared dependency: the core
-# registry eagerly loads every entry point, which imports the hybrid module
-# (and with it the agent plugin) on any registry path, not just hybrid runs.
+# module's rpy/rot6d math. The retired hybrid executor still imports the agent
+# chat client, and HarnessVLA subclasses that executor, so
+# inspect-robots-agent stays a dependency of this package.
 dependencies = [
     "inspect-robots>=0.44",
     "inspect-robots-agent>=0.26",
@@ -40,14 +38,11 @@ dev = ["pytest>=8.0", "pytest-cov>=5.0", "mypy>=1.11", "ruff>=0.6"]
 
 # Entry-point discovery: an installed inspect-robots-vla appears in
 # `inspect-robots list policies` without being imported first. The registry
-# calls these factories by name (`vla`, `hybrid`) but eagerly loads every
-# entry point in the group, so any registry path imports the hybrid
-# module and, through it, the agent plugin the hybrid depends on.
+# calls these factories by name. `hybrid` is retired and is not registered.
 # `umi-replay` is the pre-rename alias kept for old commands and scripts.
 [project.entry-points."inspect_robots.policies"]
 vla = "inspect_robots_vla:vla_policy"
 umi-replay = "inspect_robots_vla:vla_policy"
-hybrid = "inspect_robots_vla.hybrid:hybrid_policy"
 
 [project.urls]
 Homepage = "https://github.com/robocurve/inspect-robots/tree/main/plugins/inspect-robots-vla"

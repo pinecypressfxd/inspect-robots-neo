@@ -11,6 +11,7 @@ import atexit
 import os
 import select
 import shutil
+import signal
 import sys
 import threading
 import time
@@ -24,6 +25,7 @@ from inspect_robots.console import (
     ConsolePoll,
     OperatorConsole,
     OperatorInput,
+    _parse,
     _stdin_readable,
 )
 from inspect_robots.errors import EmbodimentFault
@@ -48,6 +50,21 @@ _END_HINT_PHRASE = "ends the episode"
 # applies mid-inference too; the accepted cost is unchanged from plan 0051: a tail
 # delayed past this floor misreads as bare Esc and then types literally into the buffer.
 _ESC_GRACE_S = 0.15
+
+
+def _interrupt_main() -> None:
+    """Raise KeyboardInterrupt on the rollout thread, even inside a blocking read.
+
+    ``_thread.interrupt_main`` only sets a flag the interpreter notices between
+    bytecodes, so it does not unblock an LLM or VLA socket read. A real SIGINT
+    delivered to that thread does.
+    """
+    ident = threading.main_thread().ident
+    if ident is None:
+        return
+    signal.pthread_kill(ident, signal.SIGINT)
+
+
 # Background echo pump cadence. Echo latency while the policy blocks in inference is
 # bounded by this interval; the Esc grace settles within _ESC_GRACE_S + this interval.
 ECHO_INTERVAL_S = 0.05
@@ -203,6 +220,7 @@ class OperatorSession:
         atexit_register: Callable[[Callable[[], None]], object] | None = None,
         now_fn: Callable[[], float] | None = None,
         console_usage: str | None = None,
+        interrupt_main: Callable[[], None] = _interrupt_main,
     ) -> None:
         self._input_fn = input_fn
         self._write_fn = write
@@ -241,6 +259,9 @@ class OperatorSession:
         self._pump_thread: threading.Thread | None = None
         self._pump_stop: threading.Event | None = None
         self._pump_error: Exception | None = None
+        self._interrupt_main = interrupt_main
+        # Set once the echo pump has queued an end request for this footer window.
+        self._interrupt_sent = False
         # Monotonic stamp of the byte-feeding pump that left an ESC pending; None means
         # no bare-Esc grace is armed.
         self._esc_stamp: float | None = None
@@ -284,6 +305,14 @@ class OperatorSession:
             return ""
         raw = self._fd_read()
         return "" if raw == b"" else raw.decode("utf-8", errors="replace")
+
+    def stop_pending(self) -> bool:
+        """True once this window's echo pump has interrupted the rollout for an end request."""
+        return self._interrupt_sent
+
+    def _queued_end(self, start: int) -> bool:
+        """Whether ``_line_queue[start:]`` contains an end request."""
+        return any(_parse(f"{line}\n")[1] is not None for line in self._line_queue[start:])
 
     def _pump_input(self) -> None:
         """Drain readable stdin into the line editor, echoing the input row after each chunk.
@@ -387,12 +416,22 @@ class OperatorSession:
         itself never prints or raises.
         """
         while not stop.wait(interval):
+            should_interrupt = False
             with self._lock:
                 try:
+                    queued = len(self._line_queue)
                     self._pump_input()
+                    if not self._interrupt_sent and self._queued_end(queued):
+                        self._interrupt_sent = True
+                        should_interrupt = True
                 except Exception as exc:
                     self._pump_error = exc
                     return
+            if should_interrupt:
+                # The rollout thread is blocked in inference and will not poll
+                # until that call returns. One SIGINT makes the call raise so
+                # the queued /stop (or Esc) is honored.
+                self._interrupt_main()
 
     def _stop_echo_pump(self) -> None:
         """Idempotently stop and join the echo pump thread for this footer window.
@@ -438,6 +477,7 @@ class OperatorSession:
         self._line_queue = []
         self._pump_eof = False
         self._esc_stamp = None
+        self._interrupt_sent = False
         # Cleared per closed window (decision 5, plan 0066): a stale error from trial N
         # must not kill trial N+1's plain-mode console when its footer entry fails the
         # gate ladder. Safe because poll() consumes the error before raising.

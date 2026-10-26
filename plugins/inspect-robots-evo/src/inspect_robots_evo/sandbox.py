@@ -34,6 +34,7 @@ def check_source(source: str) -> None:
 
 def limited_builtins() -> dict[str, object]:
     """返回只允许 math 和 json 的 builtins."""
+
     def _import(name, globals=None, locals=None, fromlist=(), level=0):
         if level != 0:
             raise SandboxError("relative import is not allowed")

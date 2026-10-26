@@ -133,16 +133,57 @@ class NeroArm:
         assert self._robot is not None, "connect() before electronic_emergency_stop()"
         self._robot.electronic_emergency_stop()
 
-    def damped_disable(self, *, settle_s: float = 0.2) -> bool:
-        """Damp all joints, let the damping take hold, then disable the motors.
+    def damped_disable(
+        self,
+        *,
+        poll_s: float = 0.05,
+        still_s: float = 0.5,
+        descent_timeout_s: float = 12.0,
+        still_eps_rad: float = 0.01,
+    ) -> bool:
+        """Hold damping for the whole gravity descent, then disable.
 
-        Disabling an un-damped, brake-less arm is a free fall; the damping
-        first turns that fall into a slow, shock-free descent.
+        ``electronic_emergency_stop`` raises joint kd and latches. Clearing
+        that latch after a short pause, then disabling, damps only the first
+        moment and lets the rest of the fall go limp. This waits, while the
+        latch is still held, until the joints stop moving or the descent
+        timeout expires, and only then resets and disables so Home can enable
+        again.
         """
         with contextlib.suppress(Exception):
             self.electronic_emergency_stop()
-            self._sleep(settle_s)
+            self._wait_until_still(
+                poll_s=poll_s,
+                still_s=still_s,
+                timeout_s=descent_timeout_s,
+                eps_rad=still_eps_rad,
+            )
+            self.reset_motion_controller()
         return self.disable()
+
+    def _wait_until_still(
+        self, *, poll_s: float, still_s: float, timeout_s: float, eps_rad: float
+    ) -> None:
+        """Poll joint angles until they hold still, or ``timeout_s`` elapses."""
+        needed = max(1, int(still_s / poll_s))
+        limit = max(needed, int(timeout_s / poll_s))
+        stable = 0
+        previous = self.read_state()
+        for _ in range(limit):
+            self._sleep(poll_s)
+            current = self.read_state()
+            if (
+                current is None
+                or previous is None
+                or len(current) != len(previous)
+                or max(abs(a - b) for a, b in zip(current, previous, strict=True)) > eps_rad
+            ):
+                stable = 0
+            else:
+                stable += 1
+                if stable >= needed:
+                    return
+            previous = current
 
     def disable(self) -> bool:
         """Disable the arm's motors."""

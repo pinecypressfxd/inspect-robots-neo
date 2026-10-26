@@ -1,4 +1,4 @@
-"""HybridPolicy tests: the planner state machine over injected fakes.
+"""ExecutorPolicy tests: the planner state machine over injected fakes.
 
 The fake LLM speaks only the ``.complete(messages, tools)`` seam (returning
 real ``AssistantMessage`` objects with scripted tool calls) and the fake VLA
@@ -32,8 +32,13 @@ from inspect_robots import (
 )
 from inspect_robots.errors import ConfigError, PolicyError
 from inspect_robots_vla._client import VlaChunk, VlaServiceError
-from inspect_robots_vla._config import ACTION_DIM_VLA
-from inspect_robots_vla.hybrid import HybridPolicy, HybridPolicyConfig, hybrid_policy
+from inspect_robots_vla._config import ACTION_DIM_VLA, TRAINED_SKILL_PROMPT
+from inspect_robots_vla.executor import ExecutorPolicy, ExecutorPolicyConfig, hybrid_policy
+
+
+def test_hybrid_registry_factory_is_retired() -> None:
+    with pytest.raises(ConfigError, match="retired"):
+        hybrid_policy("m")
 
 _LEFT_RPY = (0.10, -0.20, 0.30)
 _RIGHT_RPY = (-0.40, 0.25, -0.15)
@@ -64,7 +69,10 @@ class _FakeVla:
         task: str,
         *,
         request_id: int,
+        replay_proprioception_json: str | None = None,
+        source_observation_timestamp_ns: int | None = None,
     ) -> VlaChunk:
+        del replay_proprioception_json, source_observation_timestamp_ns
         self.calls.append(
             _VlaCall(
                 images={} if images is None else dict(images),
@@ -208,19 +216,19 @@ def _no_call(text: str = "let me think") -> AssistantMessage:
     return AssistantMessage(content=text, tool_calls=())
 
 
-_PROMPT = "put the cup on the saucer"
+_PROMPT = "put the red cup on the pad"
 
 
 def _policy(
     llm: _FakeLlm,
     vla: _FakeVla,
     **kwargs: Any,
-) -> HybridPolicy:
+) -> ExecutorPolicy:
     """A hybrid with both backends injected and the prompt pinned."""
-    return hybrid_policy("test/model", llm=llm, vla=vla, prompt=_PROMPT, **kwargs)
+    return ExecutorPolicy("test/model", llm=llm, vla=vla, prompt=_PROMPT, **kwargs)
 
 
-def _reset(policy: HybridPolicy, instruction: str = _PROMPT) -> None:
+def _reset(policy: ExecutorPolicy, instruction: str = _PROMPT) -> None:
     policy.reset(Scene(id="s", instruction=instruction))
 
 
@@ -229,8 +237,8 @@ def test_planning_executing_deciding_done_full_path() -> None:
     vla = _FakeVla([_zero_chunk()])
     policy = _policy(llm, vla, checkpoint_interval_s=0.0)
     assert isinstance(policy, Policy)
-    assert policy.info.name == "hybrid"
-    assert isinstance(policy.config, HybridPolicyConfig)
+    assert policy.info.name == "executor"
+    assert isinstance(policy.config, ExecutorPolicyConfig)
     assert policy.config.budget_llm_calls == 100
 
     _reset(policy)
@@ -520,17 +528,17 @@ def test_executing_requires_the_state_key_with_no_fallback() -> None:
 )
 def test_construction_rejects_bad_kwargs(kwargs: dict[str, Any], match: str) -> None:
     with pytest.raises(ConfigError, match=match):
-        hybrid_policy(llm=_FakeLlm([]), vla=_FakeVla([]), **kwargs)
+        ExecutorPolicy(llm=_FakeLlm([]), vla=_FakeVla([]), **kwargs)
 
 
 def test_reset_without_a_goal_raises_policy_error() -> None:
-    policy = hybrid_policy("m", llm=_FakeLlm([]), vla=_FakeVla([]))
+    policy = ExecutorPolicy("m", llm=_FakeLlm([]), vla=_FakeVla([]))
     with pytest.raises(PolicyError, match="prompt"):
         policy.reset(Scene(id="s", instruction=""))
 
 
 def test_default_llm_and_vla_clients_are_built_and_closed() -> None:
-    policy = hybrid_policy(
+    policy = ExecutorPolicy(
         "openrouter/qwen",
         base_url=None,
         api_key_env=None,
@@ -546,7 +554,7 @@ def test_default_llm_and_vla_clients_are_built_and_closed() -> None:
     policy.__del__()  # guarded: closing twice must not raise
 
     with pytest.raises(ConfigError, match="no API key found"):
-        hybrid_policy("m", env={}, vla=_FakeVla([]))
+        ExecutorPolicy("m", env={}, vla=_FakeVla([]))
 
 
 def test_close_leaves_injected_backends_alone() -> None:
@@ -609,6 +617,86 @@ def test_analytic_move_to_builds_partial_target_chunk() -> None:
     assert rows[-1][1:10] == pytest.approx(np.asarray(_eef_state()[1:10]), abs=1e-6)
 
 
+def _image_urls(messages: Sequence[dict[str, Any]]) -> list[str]:
+    urls: list[str] = []
+    for message in messages:
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "image_url":
+                urls.append(str(part["image_url"]["url"]))
+    return urls
+
+
+def test_planner_sends_only_the_latest_camera_frames() -> None:
+    llm = _FakeLlm([_no_call(), _move_to({"left_x": 0.40}), _move_to({"left_x": 0.50})])
+    policy = _policy(llm, _FakeVla([]))
+    _bind_semantics(policy)
+    _reset(policy)
+    first_frames = {"left_rgbd": _hwc(11), "right_rgbd": _hwc(12), "chest_rgbd": _hwc(13)}
+    second_frames = {"left_rgbd": _hwc(21), "right_rgbd": _hwc(22), "chest_rgbd": _hwc(23)}
+    from inspect_robots_agent._png import png_data_url
+
+    first_urls = [png_data_url(first_frames[name]) for name in sorted(first_frames)]
+    second_urls = [png_data_url(second_frames[name]) for name in sorted(second_frames)]
+
+    policy.act(_observation(frames=first_frames))
+    # The nudge and the move share one observation, so both calls still carry it.
+    assert _image_urls(llm.calls[0].messages) == first_urls
+    assert _image_urls(llm.calls[1].messages) == first_urls
+
+    policy.act(_observation(frames=second_frames))
+    sent = llm.calls[2].messages
+    assert _image_urls(sent) == second_urls
+    older = next(
+        message
+        for message in sent
+        if message.get("role") == "user" and isinstance(message.get("content"), list)
+    )
+    assert "state[eef_state]" in _text_of([older])
+    assert "camera frame(s) elided" in _text_of([older])
+    assert "analytic motion accepted" in _text_of(sent)
+    assert "stage above the cup" in json.dumps(sent)
+    # The stored transcript still records that those frames existed.
+    stored = json.dumps(policy.transcript())
+    assert stored.count("[image omitted: streamed camera frame]") == 6
+    assert "camera frame(s) elided" not in stored
+
+
+def test_planner_prints_stage_timing_and_shrinks_large_frames(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    llm = _FakeLlm([_move_to({"left_x": 0.40})])
+    policy = _policy(llm, _FakeVla([]))
+    _bind_semantics(policy)
+    _reset(policy)
+    big = {
+        "left_rgbd": np.zeros((480, 640, 3), dtype=np.uint8),
+        "right_rgbd": np.zeros((480, 640, 3), dtype=np.uint8),
+        "chest_rgbd": np.zeros((480, 640, 3), dtype=np.uint8),
+    }
+    policy.act(_observation(frames=big))
+    import base64
+    import struct
+
+    url = _image_urls(llm.calls[0].messages)[0]
+    raw = base64.b64decode(url.split(",", 1)[1])
+    width, height = struct.unpack(">II", raw[16:24])
+    assert (width, height) == (320, 240)
+    out = capsys.readouterr().out
+    assert "[timing] llm #1 request images=" in out
+    assert "[timing] llm #1 move_to " in out
+    assert "[timing] move_to motion " in out
+    stamped = [
+        message["at"]
+        for message in policy.transcript() or []
+        if message.get("role") == "assistant" and message.get("tool_calls")
+    ]
+    assert len(stamped) == 1
+    assert len(stamped[0]) == 8 and stamped[0][2] == ":" and stamped[0][5] == ":"
+
+
 def test_analytic_set_gripper_only_touches_one_dim() -> None:
     llm = _FakeLlm([_set_gripper("left", 0.02), _done()])
     vla = _FakeVla([])
@@ -620,6 +708,36 @@ def test_analytic_set_gripper_only_touches_one_dim() -> None:
     assert rows[-1][9] == pytest.approx(0.02, abs=1e-6)
     assert rows[-1][19] == pytest.approx(_eef_state()[19], abs=1e-6)
     assert rows[-1][0:3] == pytest.approx(np.asarray(_eef_state()[0:3]), abs=1e-6)
+
+
+def test_goal_without_red_cup_hides_vla_and_keeps_gripper() -> None:
+    llm = _FakeLlm(
+        [
+            _delegate(TRAINED_SKILL_PROMPT),
+            _set_gripper("left", 0.0),
+            _done(),
+        ]
+    )
+    vla = _FakeVla([_zero_chunk()])
+    policy = ExecutorPolicy("test/model", llm=llm, vla=vla, prompt="slide the box left")
+    _bind_semantics(policy)
+    policy.reset(Scene(id="s", instruction="slide the box left"))
+
+    chunk = policy.act(_observation())
+
+    system = str(llm.calls[0].messages[0]["content"])
+    assert "does not name a red cup" in system
+    assert {tool["function"]["name"] for tool in llm.calls[0].tools} == {
+        "move_to",
+        "set_gripper",
+        "done",
+        "give_up",
+    }
+    assert vla.calls == []
+    assert chunk.meta.get("analytic") == "set_gripper"
+    refused = _text_of(llm.calls[-1].messages)
+    assert "does not name a red cup" in refused
+    assert "set_gripper" in refused
 
 
 def test_analytic_move_rejects_unknown_dimension() -> None:
@@ -653,7 +771,7 @@ _DIM_LABELS = tuple(
 )
 
 
-def _bind_semantics(policy: HybridPolicy) -> None:
+def _bind_semantics(policy: ExecutorPolicy) -> None:
     """Bind an embodiment whose action space names all 20 dims."""
     from inspect_robots import Box, CameraSpec, EmbodimentInfo, ObservationSpace
     from inspect_robots.spaces import ActionSemantics

@@ -1,11 +1,13 @@
-"""HybridPolicy: an LLM planner delegating skill segments to the VLA.
+"""ExecutorPolicy: the planner executor HarnessVLA subclasses.
 
-Helix-style layering (plan 0084): the planner (Astra through the agent
-plugin's chat wire) decomposes the goal and hands each short skill to the
-``vla`` VLA execution loop; at every checkpoint, tracking abort, or
-time cap it sees the latest observation plus a compact progress note and
-decides again. The VLA is the hands, the LLM is the brain, and ``done`` /
-``give_up`` stay with the LLM. As with the pure adapter, this module adds no
+This module is not a selectable policy. The old ``hybrid`` registry name is
+retired; ``hybrid_policy`` raises. HarnessVLA subclasses ``ExecutorPolicy``.
+
+Helix-style layering (plan 0084): the planner reads the system prompt and tool
+descriptions in this module, approaches with analytic motion, and calls the VLA
+only for contact when a hand is already close to the cup. At every checkpoint,
+tracking abort, or time cap it sees the latest observation plus a compact
+progress note and decides again. As with the pure adapter, this module adds no
 safety logic of its own: every emitted action still passes the rollout's
 approver chain.
 """
@@ -21,7 +23,7 @@ import os
 import time
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, Protocol
+from typing import Any, NoReturn, Protocol
 
 import numpy as np
 from inspect_robots_agent._llm import (
@@ -86,8 +88,24 @@ _MAX_TURNS_WITHOUT_CALL = 3
 _NUDGE = "Respond with exactly one tool call."
 
 
+def goal_names_red_cup(goal: str) -> bool:
+    """True when ``goal`` names a red cup in English or Chinese.
+
+    ``红色的杯子`` keeps 的 between 红色 and 杯, so the check looks forward
+    from 红色 instead of requiring the two characters to be adjacent.
+    """
+    folded = " ".join(goal.lower().split())
+    if "red cup" in folded:
+        return True
+    compact = "".join(goal.split())
+    if "红杯" in compact:
+        return True
+    red = compact.find("红色")
+    return red >= 0 and "杯" in compact[red:]
+
+
 class LlmWire(Protocol):
-    """The planner seam HybridPolicy needs; the agent plugin's client satisfies it.
+    """The planner seam ExecutorPolicy needs; the agent plugin's client satisfies it.
 
     The Protocol (not the concrete client) is the constructor's type so tests
     can inject a scripted fake without inheritance.
@@ -132,7 +150,7 @@ class _EffortLlm(LlmWire):
 
 
 @dataclass(frozen=True)
-class HybridPolicyConfig(PolicyConfig):
+class ExecutorPolicyConfig(PolicyConfig):
     """Inference-time configuration recorded in the eval log.
 
     Extends the core ``PolicyConfig``; ``eval()`` serializes configs with
@@ -152,7 +170,7 @@ class HybridPolicyConfig(PolicyConfig):
     tracking_abort_pos_m: float = TRACKING_ABORT_POS_M
     tracking_abort_rot_deg: float = TRACKING_ABORT_ROT_DEG
     budget_llm_calls: int = BUDGET_LLM_CALLS
-    name: str = "hybrid"
+    name: str = "executor"
 
 
 class _Phase(enum.Enum):
@@ -165,23 +183,47 @@ class _Phase(enum.Enum):
 
 
 _SYSTEM_TEMPLATE = """You are the planner of a hybrid robot policy controlling a \
-real embodiment named {name!r}. A vision-language-action skill policy is your \
-hands: it executes short trained skills, but it cannot reason and only \
-generalizes to skills close to its training tasks. Division of labor: use \
-move_to and set_gripper for free-space transport, staging, retreat, and any \
-motion the skill policy was not trained on; reserve delegate_skill for \
-contact-rich phases close to a trained skill (grasping, constrained \
-placement). Phrase each delegate_skill subgoal as a near-verbatim excerpt of \
-the user's goal or of a trained task phrasing; do not invent novel wording \
-for the skill policy. At every checkpoint you receive the latest observation \
-and a skill progress note; decide whether to continue with analytic moves, \
-delegate the next skill, retry with a different staging pose, or correct \
-course. A skill_interrupted report means the hands did not track the \
-commanded motion; restage with move_to and reconsider rather than repeating \
-the same skill unchanged. Respond with exactly one tool call per turn. When \
-the goal is achieved call done; if it cannot be achieved call give_up. Note \
-what you are learning about this rig and task as you go. You have a budget \
-of {budget} LLM calls for the whole trial."""
+real embodiment named {name!r}. Carry out the Goal below, in the order it \
+states. A vision-language-action skill policy is your hands for one object \
+only: the red cup. It cannot reason. You see the three cameras after every \
+tool returns. Do not give up because the Goal is not a pad or box handoff. \
+give_up only when the cameras show the Goal is impossible.
+
+Division of labor:
+- Blocks, jars, and every object other than the red cup: move_to and \
+set_gripper only. Open the gripper (0.09), move_to the object, set_gripper \
+closed to grasp, then move_to the destination named in the Goal and open.
+- The red cup: move_to until that hand is close, then delegate_skill once \
+to grasp. Pass the trained sentence verbatim as subgoal. When the cameras \
+show the cup in the gripper, set_gripper to the current closing width and \
+move_to the destination the Goal names. Do not keep the skill running into \
+a placement the Goal did not ask for.
+Do not send the arm back to a training start pose.
+
+Cycle, one tool call per turn. After each return, look at the cameras before \
+the next call. Near a container, follow the embodiment notes: raise z first, \
+translate in xy at constant z, then lower z. If a placement is only a few \
+centimeters off and the object is still held or still upright, correct with \
+move_to. If the object fell or the hand left it, approach again. For the red \
+cup, delegate_skill again only when the hand is close and the grasp failed.
+
+When a segment ends at a checkpoint, a tracking interrupt, or the time \
+bound, look and continue the Goal from the current object. A checkpoint is \
+not a reason to repeat the same delegate_skill. On skill_interrupted, \
+move_to to restage, then reconsider. Call done when every object in the Goal \
+is in its destination. You have a budget of {budget} LLM calls for the whole \
+trial."""
+
+_ANALYTIC_ONLY_TEMPLATE = """You are the planner of a hybrid robot policy controlling a \
+real embodiment named {name!r}. The goal does not name a red cup, so the \
+vision-language-action skill is unavailable. Grasp and place with move_to \
+and set_gripper. Do not call delegate_skill. move_to brings a hand to the \
+object and carries it. set_gripper opens to 0.09 before an approach and \
+closes toward 0 to grasp. Unnamed dimensions hold their current value. Near \
+a container, follow the embodiment notes: raise z first, translate in xy at \
+constant z, then lower z. Respond with exactly one tool call per turn. When \
+the goal is achieved call done; if it cannot be achieved call give_up. You \
+have a budget of {budget} LLM calls for the whole trial."""
 
 _HINDSIGHT_DESCRIPTION = (
     "What you wish you had known at the start of this trial. Concrete, "
@@ -198,9 +240,11 @@ _TOOLS: list[dict[str, Any]] = [
                 "Analytic free-space motion: move to absolute Cartesian "
                 "end-effector targets (a straight line at a fixed safe "
                 "speed). Unnamed dimensions hold their current value. Use "
-                "this for transport, staging, retreat, and re-approach "
-                "before or between VLA skills; reserve delegate_skill for "
-                "contact-rich phases."
+                "this to approach an object, to carry a grasped object to the "
+                "destination named in the Goal, and to nudge a placement that "
+                "is only a few centimeters off. When the goal names a red cup "
+                "and the hand is close enough to grasp it, call delegate_skill. "
+                "Grasp every other object with set_gripper."
             ),
             "parameters": {
                 "type": "object",
@@ -224,7 +268,10 @@ _TOOLS: list[dict[str, Any]] = [
             "name": "set_gripper",
             "description": (
                 "Set one gripper's absolute opening width in meters "
-                "(0 closed to 0.09 open) while holding position."
+                "(0 closed to 0.09 open) while holding position. Open to 0.09 "
+                "before an approach. Close to grasp when the goal does not "
+                "name a red cup. After delegate_skill has grasped a red cup, "
+                "set the current closing width before move_to."
             ),
             "parameters": {
                 "type": "object",
@@ -242,11 +289,16 @@ _TOOLS: list[dict[str, Any]] = [
         "function": {
             "name": "delegate_skill",
             "description": (
-                "Hand one contact-rich skill segment (grasping, constrained placement, "
-                "fixture actuation) to the VLA skill policy for open-loop "
-                "execution. Stage with move_to first when the approach pose "
-                "matters; you regain control at the next checkpoint, on a "
-                "tracking interrupt, or when the time bound elapses."
+                "One contact attempt by the VLA. Call it only when the Goal names "
+                "a red cup and this hand is already close to the cup. If the "
+                "Goal does not name a red cup, do not call this tool; grasp with "
+                "move_to and set_gripper. Use it to grasp the red cup. Do not "
+                "use it on blocks or jars. Do not use it to approach "
+                "from far away or to carry the cup to the box. You regain "
+                "control at the next checkpoint, on a "
+                "tracking interrupt, or when the time bound elapses; then look "
+                "at the cameras and continue the current phase. A checkpoint "
+                "is not a reason to call this again with the same subgoal."
             ),
             "parameters": {
                 "type": "object",
@@ -254,8 +306,7 @@ _TOOLS: list[dict[str, Any]] = [
                     "subgoal": {
                         "type": "string",
                         "description": (
-                            "One short, concrete skill the VLA was trained to perform, "
-                            "phrased the way its training prompts read."
+                            "The trained sentence, copied verbatim. Any other wording stalls."
                         ),
                     },
                     "max_seconds": {
@@ -338,8 +389,102 @@ def _sanitize(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return sanitized
 
 
-class HybridPolicy(PolicyBase):
-    """The ``hybrid`` policy: LLM planning, VLA execution, checkpoints between.
+def _latest_frames_only(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return a send-view that keeps camera frames on the newest observation.
+
+    The planner decides from the current cameras, the state vector, and the
+    text of every earlier tool call. Older frames show a previous pose, and
+    the Responses client resends the whole transcript (``store`` is false),
+    so leaving them in is what makes each later call slower. The stored
+    conversation is not modified.
+    """
+    image_indices = [
+        index
+        for index, message in enumerate(messages)
+        if isinstance((content := message.get("content")), list)
+        and any(isinstance(part, dict) and part.get("type") == "image_url" for part in content)
+    ]
+    stale = image_indices[:-1]
+    if not stale:
+        return list(messages)
+    view = list(messages)
+    for message_index in stale:
+        message = messages[message_index]
+        content = message["content"]
+        assert isinstance(content, list)
+        image_slots = [
+            index
+            for index, part in enumerate(content)
+            if isinstance(part, dict) and part.get("type") == "image_url"
+        ]
+        removed = set(image_slots)
+        for image_index in image_slots:
+            if image_index == 0:
+                continue
+            label = content[image_index - 1]
+            if isinstance(label, dict) and label.get("type") == "text":
+                removed.add(image_index - 1)
+        kept = [part for index, part in enumerate(content) if index not in removed]
+        kept.append({"type": "text", "text": f"[{len(image_slots)} camera frame(s) elided]"})
+        view[message_index] = {**message, "content": kept}
+    return view
+
+
+_PLANNER_IMAGE_EDGE = 320
+
+
+def _planner_frame(frame: np.ndarray) -> np.ndarray:
+    """Shrink one camera so the planner request stays a few hundred kilobytes.
+
+    The long edge is at most 320 px. Nearest neighbor, no extra dependency.
+    A full 640x480 PNG is about 0.6 MB and the vision model spends the wait
+    on those pixels; the arm's own cameras stay full size.
+    """
+    array = np.asarray(frame)
+    if array.ndim < 2:
+        return array
+    height, width = int(array.shape[0]), int(array.shape[1])
+    long_edge = max(height, width)
+    if long_edge <= _PLANNER_IMAGE_EDGE or long_edge < 1:
+        return array
+    scale = _PLANNER_IMAGE_EDGE / long_edge
+    new_height = max(1, round(height * scale))
+    new_width = max(1, round(width * scale))
+    rows = np.linspace(0, height - 1, new_height).astype(np.intp)
+    cols = np.linspace(0, width - 1, new_width).astype(np.intp)
+    return np.ascontiguousarray(array[rows][:, cols])
+
+
+def _image_chars(messages: list[dict[str, Any]]) -> int:
+    """Character count of the image data URLs in a send-view."""
+    total = 0
+    for message in messages:
+        content = message.get("content")
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            if isinstance(part, dict) and part.get("type") == "image_url":
+                url = part.get("image_url", {}).get("url", "")
+                total += len(str(url))
+    return total
+
+
+def _emit_timing(text: str) -> None:
+    """One stage line on stdout. The mission console renders lines with this prefix."""
+    print(f"[timing] {text}", flush=True)
+
+
+@dataclass(frozen=True)
+class _LibraryTurn:
+    """Result of a primitive handled outside the hybrid tool names."""
+
+    reply: str | None = None
+    chunk: ActionChunk | None = None
+    failed: bool = False
+
+
+class ExecutorPolicy(PolicyBase):
+    """Planner executor: LLM planning, VLA execution, checkpoints between.
 
     One ``act()`` returns exactly one chunk: either a VLA chunk executing the
     current skill segment (task = the delegated subgoal, anchored on the
@@ -404,7 +549,7 @@ class HybridPolicy(PolicyBase):
         tracking_abort_pos_m: float = TRACKING_ABORT_POS_M,
         tracking_abort_rot_deg: float = TRACKING_ABORT_ROT_DEG,
         budget_llm_calls: int = BUDGET_LLM_CALLS,
-        name: str = "hybrid",
+        name: str = "executor",
         llm: LlmWire | None = None,
         vla: VlaWire | None = None,
         env: dict[str, str] | None = None,
@@ -507,7 +652,7 @@ class HybridPolicy(PolicyBase):
             observation_space=ObservationSpace(state_keys=frozenset({state_key})),
             control_hz=self._control_hz,
         )
-        self.config = HybridPolicyConfig(
+        self.config = ExecutorPolicyConfig(
             action_horizon=CHUNK_STEPS,
             model=model,
             base_url=base_url,
@@ -568,6 +713,7 @@ class HybridPolicy(PolicyBase):
                 "scenes that carry instructions"
             )
         self._rearm_trial_state()
+        self._goal = goal
         self._messages = [
             {"role": "system", "content": self._system_prompt()},
             {"role": "user", "content": f"Goal: {goal}"},
@@ -620,6 +766,7 @@ class HybridPolicy(PolicyBase):
                 return self._execute_chunk(observation)
             self._interrupt_reason = outcome
             self._phase = _Phase.DECIDING
+            self._on_segment_end(outcome)
         return self._decide(observation)
 
     def _segment_outcome(self, observation: Observation) -> str | None:
@@ -715,9 +862,19 @@ class HybridPolicy(PolicyBase):
         while True:
             if self._calls_used >= self._budget_llm_calls:
                 return self._forced_give_up("LLM call budget exhausted", observation)
-            message = self._llm.complete(self._messages, _TOOLS)
+            outgoing = _latest_frames_only(self._messages)
+            call_index = self._calls_used + 1
+            image_mb = _image_chars(outgoing) / 1_000_000
+            _emit_timing(f"llm #{call_index} request images={image_mb:.2f}MB")
+            started = time.perf_counter()
+            message = self._llm.complete(outgoing, self._planner_tools())
+            waited = time.perf_counter() - started
+            tool_name = message.tool_calls[0].name if message.tool_calls else "no-tool"
+            _emit_timing(f"llm #{call_index} {tool_name} {waited:.1f}s")
             self._calls_used += 1
-            self._messages.append(message.raw())
+            raw_message = message.raw()
+            raw_message["at"] = time.strftime("%H:%M:%S")
+            self._messages.append(raw_message)
             calls = message.tool_calls
             if not calls:
                 self._messages.append({"role": "user", "content": _NUDGE})
@@ -728,6 +885,33 @@ class HybridPolicy(PolicyBase):
                     )
                 continue
             call, extras = calls[0], calls[1:]
+            library = self._library_turn(call, observation)
+            if library is not None:
+                if library.reply is not None:
+                    self._reply((call,), library.reply)
+                self._reply(extras, "ignored: one tool call per turn")
+                if library.chunk is not None:
+                    return library.chunk
+                if library.failed:
+                    invalid_turns += 1
+                    if invalid_turns >= _MAX_TURNS_WITHOUT_CALL:
+                        raise PolicyError(
+                            f"hybrid planner tool calls kept failing; last error: {library.reply}"
+                        )
+                continue
+            if call.name == "delegate_skill" and not self._goal_allows_vla():
+                error = (
+                    "this goal does not name a red cup; grasp with move_to and "
+                    "set_gripper. delegate_skill is only for a red cup"
+                )
+                self._reply((call,), error)
+                self._reply(extras, "ignored: one tool call per turn")
+                invalid_turns += 1
+                if invalid_turns >= _MAX_TURNS_WITHOUT_CALL:
+                    raise PolicyError(
+                        "hybrid planner tool calls kept failing; last error: " + error
+                    )
+                continue
             if call.name in ("move_to", "set_gripper"):
                 moved, motion_error = self._analytic_move(call, observation)
                 if moved is None or motion_error is not None:
@@ -743,6 +927,10 @@ class HybridPolicy(PolicyBase):
                 self._reply((call,), "analytic motion accepted")
                 self._reply(extras, "ignored: one tool call per turn")
                 self._last_tool_note = str(call.arguments)
+                self._on_analytic(call)
+                _emit_timing(
+                    f"{call.name} motion {len(moved) / self._control_hz:.1f}s ({len(moved)} steps)"
+                )
                 return moved
             if call.name == "delegate_skill":
                 subgoal, granted = self._parse_delegation(call)
@@ -763,15 +951,31 @@ class HybridPolicy(PolicyBase):
                 chunk = self._stop(call, observation)
                 self._reply(extras, "ignored: one tool call per turn")
                 return chunk
-            error = (
-                f"unknown tool {call.name!r}; available: "
-                "move_to, set_gripper, delegate_skill, done, give_up"
-            )
+            names = ", ".join(tool["function"]["name"] for tool in self._planner_tools())
+            error = f"unknown tool {call.name!r}; available: {names}"
             self._reply((call,), error)
             self._reply(extras, "ignored: one tool call per turn")
             invalid_turns += 1
             if invalid_turns >= _MAX_TURNS_WITHOUT_CALL:
                 raise PolicyError(f"hybrid planner tool calls kept failing; last error: {error}")
+
+    def _library_turn(self, call: ToolCall, observation: Observation) -> _LibraryTurn | None:
+        """Optional primitive handled before the hybrid tool names.
+
+        ``None`` leaves the call to ``move_to``, ``delegate_skill``, ``done``,
+        and ``give_up``. A turn with a chunk ends this ``act()``. A turn
+        without a chunk stays in the planner loop.
+        """
+        del call, observation
+        return None
+
+    def _on_analytic(self, call: ToolCall) -> None:
+        """Hook after an analytic chunk is accepted. The base records nothing."""
+        del call
+
+    def _on_segment_end(self, outcome: str) -> None:
+        """Hook when a VLA segment returns control. The base records nothing."""
+        del outcome
 
     # -- planner helpers ------------------------------------------------------------
 
@@ -904,7 +1108,9 @@ class HybridPolicy(PolicyBase):
                     f"delegated to the VLA skill policy: {subgoal!r} for up to "
                     f"{granted_s:.3g}s{capped}; you regain control at the next "
                     "checkpoint, on a tracking interrupt, or when the time bound "
-                    "elapses"
+                    "elapses. Then look at the cameras and continue the current "
+                    "phase. Do not repeat this call unless the hand is still "
+                    "close to the cup and the contact failed"
                 ),
             }
         )
@@ -953,21 +1159,39 @@ class HybridPolicy(PolicyBase):
         for call in calls:
             self._messages.append({"role": "tool", "tool_call_id": call.id, "content": result})
 
+    def _goal_allows_vla(self) -> bool:
+        """True when the goal names a red cup, the one object the VLA may grasp."""
+        return goal_names_red_cup(self._goal)
+
+    def _planner_tools(self) -> list[dict[str, Any]]:
+        """Tools for this goal. Tasks without a red cup omit the VLA skill."""
+        if self._goal_allows_vla():
+            return _TOOLS
+        hidden = {"delegate_skill"}
+        return [tool for tool in _TOOLS if tool["function"]["name"] not in hidden]
+
     def _system_prompt(self) -> str:
         """The hybrid role text plus whatever embodiment notes bind() recorded."""
-        formatted = _SYSTEM_TEMPLATE.format(
-            name=self._embodiment_name, budget=self._budget_llm_calls
-        )
-        formatted += (
-            "\n\nTrained skill policy: the skill policy was finetuned on exactly one "
-            f"prompt, {TRAINED_SKILL_PROMPT!r}, and only tracks that exact phrasing "
-            "(near-variants stall after the trained half). You decide the split: "
-            "delegate the whole trained skill with that phrasing verbatim, or "
-            "delegate one phase and complete the rest with move_to and set_gripper. "
-            "Every checkpoint, tracking interrupt, and time cap returns control to "
-            "you, so a stalled or drifting skill is recoverable: restage, re-delegate, "
-            "or finish the goal analytically."
-        )
+        if self._goal_allows_vla():
+            formatted = _SYSTEM_TEMPLATE.format(
+                name=self._embodiment_name, budget=self._budget_llm_calls
+            )
+            formatted += (
+                "\n\nTrained skill policy: the skill policy was finetuned on exactly one "
+                f"prompt, {TRAINED_SKILL_PROMPT!r}. Pass that string verbatim as the "
+                "delegate_skill subgoal. Any other wording stalls after the trained half. "
+                "The goal names a red cup, so this skill may grasp that cup, and only "
+                "when the acting hand is already close. Blocks, jars, and every "
+                "other object stay on move_to and set_gripper, including the "
+                "carry to whatever destination the Goal names. Every checkpoint, "
+                "tracking interrupt, and time cap returns the cameras so you can "
+                "continue the Goal. Do not give up because the destination is "
+                "not a pad."
+            )
+        else:
+            formatted = _ANALYTIC_ONLY_TEMPLATE.format(
+                name=self._embodiment_name, budget=self._budget_llm_calls
+            )
         docs = self._embodiment_docs
         if docs is not None and docs.strip():
             formatted = formatted + "\n\nEmbodiment notes:\n" + docs.strip()
@@ -989,7 +1213,9 @@ class HybridPolicy(PolicyBase):
             if frame is None:
                 continue
             parts.append({"type": "text", "text": f"camera {name!r}:"})
-            parts.append({"type": "image_url", "image_url": {"url": png_data_url(frame)}})
+            parts.append(
+                {"type": "image_url", "image_url": {"url": png_data_url(_planner_frame(frame))}}
+            )
         return parts
 
     def _progress_note(self) -> str:
@@ -1004,7 +1230,10 @@ class HybridPolicy(PolicyBase):
             f"skill progress for {self._subgoal!r}: "
             f"steps_executed={self._segment_steps}, chunks={self._segment_chunks}, "
             f"last tracking error: {error}. "
-            f"segment ended: {self._interrupt_reason or 'checkpoint'}"
+            f"segment ended: {self._interrupt_reason or 'checkpoint'}. "
+            "Look at the cameras and continue the current phase. "
+            "delegate_skill again only if the hand is still close to the cup "
+            "and the contact has not finished."
         )
 
     # -- execution helpers ----------------------------------------------------------
@@ -1037,6 +1266,7 @@ class HybridPolicy(PolicyBase):
         self._prev_umi_state = None
         """Reset every per-trial mutable field; called from __init__ and reset."""
         self._phase = _Phase.PLANNING
+        self._goal = ""
         self._messages = []
         self._delta_cursor = 0
         self._calls_used = 0
@@ -1058,11 +1288,7 @@ def hybrid_policy(
     base_url: str | None = None,
     api_key_env: str | None = None,
     **kwargs: Any,
-) -> HybridPolicy:
-    """Registry factory for the ``hybrid`` policy (entry point ``hybrid``).
-
-    Accepts the same arguments as
-    [`HybridPolicy`][inspect_robots_vla.hybrid.HybridPolicy]; the CLI forwards
-    each ``-P key=value`` pair here.
-    """
-    return HybridPolicy(model, base_url, api_key_env, **kwargs)
+) -> NoReturn:
+    """The retired ``hybrid`` registry factory. It no longer constructs a policy."""
+    del model, base_url, api_key_env, kwargs
+    raise ConfigError("hybrid is retired; use --policy harness or --policy agent")

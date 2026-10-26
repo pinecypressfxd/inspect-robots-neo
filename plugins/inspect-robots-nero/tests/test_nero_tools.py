@@ -39,15 +39,63 @@ def test_home_arms_primes_then_move_js_straight_home() -> None:
     arms, robots = _connected_arms()
     home_arms(arms, wait_s=0.0, sleep=lambda _seconds: None)
     for robot in robots.values():
-        # No latch machinery: Home never resets the motion controller.
-        assert robot.motion_resets == 0
+        # The fake starts disabled, so Home clears the e-stop latch first.
+        assert robot.motion_resets == 1
     for side, robot in robots.items():
         # The reference reset: one move_j commanding the CURRENT joints
         # (priming the trajectory planner onto the measured pose), then one
         # move_j straight to the config home -- no follower streaming.
         home = HOME_LEFT if side == "left" else HOME_RIGHT
         assert robot.move_js_calls == []
-        assert robot.move_j_calls == [_FAKE_INITIAL, tuple(home)]
+        # Seat, leave follower and reseat, then one trajectory to home.
+        assert robot.move_j_calls == [_FAKE_INITIAL, _FAKE_INITIAL, tuple(home)]
+        assert robot.mode == "normal"
+
+
+def test_home_seats_a_holding_arm_before_any_mode_packet() -> None:
+    """A live MIT hold must not see a bare mode frame before the measured joints.
+
+    Home opens a fresh driver whose mit_mode default is position-velocity.
+    set_follower_mode / set_speed_percent / enable emit that default with no
+    joint target and the arm sags. The reference reset seats move_j(current)
+    first; speed comes after, and an already-enabled arm is left alone.
+    """
+    arms, robots = _connected_arms()
+    for robot in robots.values():
+        robot.enabled = True
+    home_arms(arms, wait_s=0.0, sleep=lambda _seconds: None)
+    for robot in robots.values():
+        assert robot.motion_resets == 0
+        kinds = [str(event[0]) for event in robot.events]
+        first_move = kinds.index("move_j")
+        assert kinds[:first_move] == []
+        assert "set_follower_mode" not in kinds
+        assert robot.events[first_move] == ("move_j", _FAKE_INITIAL)
+        assert kinds.index("set_normal_mode") > first_move
+        assert "set_speed_percent" in kinds[first_move:]
+
+
+def test_home_after_estop_resets_before_enable() -> None:
+    arms, robots = _connected_arms()
+    for robot in robots.values():
+        robot.joints_enable = [False] * 7
+        robot.enable_result = False
+
+        def enable_once_reset(bound: FakeAgxRobot = robot) -> bool:
+            bound.events.append(("enable",))
+            if bound.motion_resets < 1:
+                return False
+            bound.enabled = True
+            bound.joints_enable = [True] * 7
+            bound.enable_result = True
+            return True
+
+        robot.enable = enable_once_reset  # type: ignore[method-assign]
+
+    home_arms(arms, wait_s=0.0, sleep=lambda _seconds: None)
+    for robot in robots.values():
+        kinds = [str(event[0]) for event in robot.events]
+        assert kinds.index("reset") < kinds.index("enable") < kinds.index("move_j")
 
 
 def test_home_arms_opens_both_grippers_to_init_width() -> None:

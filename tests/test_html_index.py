@@ -210,6 +210,6 @@ def test_long_error_is_truncated_with_full_escaped_tooltip() -> None:
 def test_palette_variables_carry_over_from_the_flat_index() -> None:
     document = _document([_entry("run.json")])
 
-    assert "--link: #245ca6;" in document
-    assert "@media (prefers-color-scheme: dark)" in document
+    assert "--link: #8ebcff;" in document
+    assert "data:image/webp;base64," in document
     assert '.chip[aria-pressed="true"]' in document

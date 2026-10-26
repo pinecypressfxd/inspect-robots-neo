@@ -226,5 +226,6 @@ __marimo__/
 # Run artifacts: eval log sinks and rerun recordings live outside version
 # control; share them as release assets or external storage instead.
 logs/
+.inspect_traces/
 .worktrees/
 *.rrd

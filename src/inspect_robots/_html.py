@@ -325,11 +325,15 @@ class _WireContext:
     elide_media: bool = False
 
 
+_ROBOT_BACKGROUND = "data:image/webp;base64," + base64.b64encode(
+    (Path(__file__).resolve().parent / "assets" / "robot.webp").read_bytes()
+).decode("ascii")
+
 _STYLES = """
 :root {
   color-scheme: light dark;
   --bg: #f7f8fa;
-  --panel: #ffffff;
+  --panel: rgba(255, 255, 255, 0.84);
   --text: #20242b;
   --muted: #68707d;
   --line: #dfe3e8;
@@ -354,8 +358,8 @@ _STYLES = """
 }
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #111419;
-    --panel: #191d24;
+    --bg: rgba(17, 20, 25, 0.62);
+    --panel: rgba(25, 29, 36, 0.78);
     --text: #e7eaf0;
     --muted: #a4acb8;
     --line: #343a45;
@@ -379,8 +383,15 @@ _STYLES = """
 * { box-sizing: border-box; }
 body {
   margin: 0;
-  background: var(--bg);
   color: var(--text);
+  background-color: #050506;
+  background-image:
+    linear-gradient(90deg, rgba(5, 5, 6, 0.82), rgba(5, 5, 6, 0.2)),
+    url("__ROBOT_BACKGROUND__");
+  background-repeat: no-repeat;
+  background-position: center, right center;
+  background-size: cover;
+  background-attachment: fixed;
   font: 15px/1.55 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
 }
 main { width: min(1120px, calc(100% - 32px)); margin: 0 auto 64px; }
@@ -549,7 +560,7 @@ pre {
 }
 .decision-body { margin-top: 4px; overflow-wrap: anywhere; }
 .decision-sub, .muted { color: var(--muted); }
-""".strip()
+""".replace("__ROBOT_BACKGROUND__", _ROBOT_BACKGROUND).strip()
 
 
 def _display_status(status: str) -> str:

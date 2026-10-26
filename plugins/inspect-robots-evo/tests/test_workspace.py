@@ -9,20 +9,41 @@ def test_create_lays_out_the_task_directory(tmp_path: Path) -> None:
     workspace = Workspace.create(
         tmp_path, "pick up the cup", mode="playground", stamp="20261015-170000_aa"
     )
-    assert (workspace.root / "task.md").read_text(encoding="utf-8") == "pick up the cup"
-    assert "move_ee" in (workspace.root / "primitives.md").read_text(encoding="utf-8")
+    assert (workspace.root / "instruction.md").read_text(encoding="utf-8") == "pick up the cup"
+    primitives = (workspace.root / "primitives" / "primitives.md").read_text(encoding="utf-8")
+    assert "step(action)" in primitives
+    assert "0.05 m" in primitives
+    assert "raises z first" in primitives
+    env_py = (workspace.root / "scripts" / "env.py").read_text(encoding="utf-8")
+    assert "def step(code: str)" in env_py
+    assert (workspace.root / "observations").is_dir()
     assert (workspace.root / "submission" / "solution.py").read_text(encoding="utf-8") == ""
     assert (workspace.root / "skills").is_dir()
     assert (workspace.root / "lessons").is_dir()
     assert (workspace.root / "scratch").is_dir()
 
 
+def test_prepare_fills_an_empty_directory_and_keeps_task(tmp_path: Path) -> None:
+    root = tmp_path / "task"
+    root.mkdir()
+    workspace = Workspace(root, "playground")
+    workspace.prepare("stack the blocks")
+    assert (root / "instruction.md").read_text(encoding="utf-8") == "stack the blocks"
+    assert "step(action)" in (root / "primitives" / "primitives.md").read_text(encoding="utf-8")
+    assert (root / "submission" / "solution.py").read_text(encoding="utf-8") == ""
+    assert (root / "skills").is_dir()
+    workspace.prepare("other")
+    assert (root / "instruction.md").read_text(encoding="utf-8") == "stack the blocks"
+
+
 def test_playground_write_accepts_skills_and_rejects_task(tmp_path: Path) -> None:
     workspace = Workspace.create(tmp_path, "task", mode="playground", stamp="s")
     workspace.write_file("skills/pick.py", "def pick():\n    return 1\n")
     workspace.write_file("lessons/grip.md", "close before lift\n")
-    with pytest.raises(WorkspaceError, match=r"task\.md"):
-        workspace.write_file("task.md", "changed")
+    with pytest.raises(WorkspaceError, match=r"instruction\.md"):
+        workspace.write_file("instruction.md", "changed")
+    with pytest.raises(WorkspaceError, match="scripts"):
+        workspace.write_file("scripts/env.py", "changed")
 
 
 def test_test_mode_rejects_skill_writes(tmp_path: Path) -> None:

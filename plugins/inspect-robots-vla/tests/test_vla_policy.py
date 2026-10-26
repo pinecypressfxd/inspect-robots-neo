@@ -68,7 +68,10 @@ class _FakeClient:
         task: str,
         *,
         request_id: int,
+        replay_proprioception_json: str | None = None,
+        source_observation_timestamp_ns: int | None = None,
     ) -> VlaChunk:
+        del replay_proprioception_json, source_observation_timestamp_ns
         self.calls.append(
             _Call(
                 images={} if images is None else dict(images),

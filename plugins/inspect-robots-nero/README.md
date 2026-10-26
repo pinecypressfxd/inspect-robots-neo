@@ -144,7 +144,7 @@ alignment gate is not part of this plugin). Frames older than
 
 `scripts/mission_console.py` is a stdlib-only operator console for attended
 nero runs: three live camera tiles on top, a status line, an instruction form
-with a two-step start, stop and verdict buttons, and a link to the running
+with a two-step start, a stop button, and a link to the running
 history viewer. Run it from the repo root:
 
     python plugins/inspect-robots-nero/scripts/mission_console.py [--port 8400] [--host 127.0.0.1] \
@@ -158,7 +158,7 @@ overrides that camera's device node. Start spawns, on a pty:
     uv run --no-sync inspect-robots "<instruction>" --policy agent \
         -P model=gpt-5.6-luna -P base_url=https://api.experientiallabs.ai/v1 \
         -P api_key_env=EXPLABS_API_KEY -P max_speed_frac=0.05 \
-        --embodiment nero -E operator_reset_confirm=False
+        --embodiment nero -E operator_reset_confirm=False --grader none
 
 The child inherits the console's environment, so export `EXPLABS_API_KEY` in
 the shell that launches the console. Its terminal output is captured to a
@@ -166,7 +166,9 @@ bounded in-memory tail plus a file under `--log-dir` (default `/tmp`), and the
 run's eval log path is detected from the process's `log:` line, falling back
 to the newest `logs/*.live.json` written after the run started. The JSON API
 (`GET /api/status`, `GET /api/feed`, `POST /api/start` `/api/stop`
-`/api/verdict`) drives the same controls the page offers.
+`/api/home` `/api/estop`) drives the same controls the page offers.
+Spawned runs pass `--grader none`, so the child exits when the episode
+ends and never asks for a y/n/p verdict.
 
 Below the controls the page polls `/api/feed` once a second and renders: the
 run's live-log status (status, current step, total steps, duration), the
@@ -204,12 +206,11 @@ Safety and semantics:
   the devices but has not stored that camera yet answers a plain 503, and so
   does a dead or busy camera. An eval started outside the console while
   tiles are live fails to open the cameras: stop the console first.
-- Stop and verdicts are graceful: the buttons write the `/stop` and `/y`,
-  `/n`, `/p` (or `/skip`) console lines to the run's terminal, which is the
-  only control channel, and every write is echoed on the console's stdout.
-  The child process is never signalled or killed; it ends by itself (process
-  exit, any code, marks the run ended in `/api/status`), and closing the
-  console sends one final `/stop` before the terminal closes.
+- Stop is graceful: the button writes `/stop` to the run's terminal, which
+  is the only control channel, and every write is echoed on the console's
+  stdout. The child process is never signalled or killed; it ends by itself
+  (process exit, any code, marks the run ended in `/api/status`), and closing
+  the console sends one final `/stop` before the terminal closes.
 - Failed starts recover: a spawn that cannot start (unusable instruction,
   missing binary, full disk for the run log) returns a 400 with the reason,
   restarts the cameras it had released, and surfaces the error in
@@ -219,14 +220,13 @@ Manual checklist before first hardware use: all three camera tiles show live
 video; a start round-trip (arm, confirm, the status line flips to running
 and the tiles switch to run frames); the reasoning feed shows the model's
 messages, actions, and last decision while the run is live; Stop ends the
-episode; a verdict button resolves the verdict prompt; the ended state shows
+episode; the ended state shows
 the exit code and log path and the tiles return to live video.
 
 End to end, one mission looks like this: start the console, type the
 instruction, click Start twice (the second click, labeled as such, moves the
 arms), watch the feed panels and the run-frame tiles while the model works,
-press Stop to end the episode early if needed, click a verdict button when
-the run asks, export the finished log with
+press Stop to end the episode early if needed, export the finished log with
 `python plugins/inspect-robots-nero/scripts/export_lerobot.py logs/<stamp>.json` for training data, and
 review the whole history at the `--history-url` (default
 `http://127.0.0.1:8300/`, served by `inspect-robots view logs --serve`).

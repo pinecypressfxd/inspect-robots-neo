@@ -6,7 +6,9 @@ import builtins
 import io
 import os
 import shutil
+import signal
 import sys
+import threading
 import time
 from collections.abc import Callable
 
@@ -25,7 +27,13 @@ from inspect_robots.errors import EmbodimentFault
 from inspect_robots.rollout import TrialRecord
 from inspect_robots.scene import Scene
 from inspect_robots.scorer import operator_scorer
-from inspect_robots.session import _ESC_GRACE_S, _NOTES_PROMPT, _PROMPT, OperatorSession
+from inspect_robots.session import (
+    _ESC_GRACE_S,
+    _NOTES_PROMPT,
+    _PROMPT,
+    _interrupt_main,
+    OperatorSession,
+)
 
 
 class _RecordingConsole(OperatorConsole):
@@ -767,9 +775,11 @@ def _footer_session(
     label: str = "sent",
     now_fn: Callable[[], float] | None = None,
     echo_interval_s: float | None = None,
+    interrupt_main: Callable[[], None] | None = None,
 ) -> tuple[OperatorSession, _ScriptedFd]:
     """Build a footer-enabled session, run ``begin_trial()``, then drop its input-row draw."""
     fd = fd if fd is not None else _ScriptedFd()
+    # Tests must not raise KeyboardInterrupt in the runner when a pump queues /stop.
     session = OperatorSession(
         write=output.append,
         fd_readable=fd.readable,
@@ -779,6 +789,7 @@ def _footer_session(
         raw_mode_fn=object,
         restore_fn=lambda _state: None,
         now_fn=now_fn,
+        interrupt_main=(lambda: None) if interrupt_main is None else interrupt_main,
     )
     session.enable_footer(label=label, echo_interval_s=echo_interval_s)
     session.begin_trial()
@@ -1848,6 +1859,57 @@ def test_echo_pump_lines_are_delivered_by_later_poll() -> None:
         assert poll.end is None
     finally:
         session.end_trial()
+
+
+def test_echo_pump_interrupts_the_rollout_once_for_stop() -> None:
+    output: list[str] = []
+    interrupts: list[str] = []
+    session, fd = _footer_session(
+        output,
+        echo_interval_s=0.001,
+        interrupt_main=lambda: interrupts.append("stop"),
+    )
+    try:
+        fd.chunks.append(b"/stop\n")
+        _wait_until(lambda: bool(interrupts))
+        assert interrupts == ["stop"]
+        assert session.stop_pending()
+        poll = session.poll()
+        assert poll.end is not None
+        fd.chunks.append(b"/stop\n")
+        time.sleep(0.05)
+        assert interrupts == ["stop"]
+    finally:
+        session.end_trial()
+    assert not session.stop_pending()
+
+
+def test_interrupt_main_signals_the_rollout_thread(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[int, signal.Signals]] = []
+
+    def _record(ident: int, sig: signal.Signals) -> None:
+        calls.append((ident, sig))
+
+    monkeypatch.setattr("inspect_robots.session.signal.pthread_kill", _record)
+    _interrupt_main()
+    ident = threading.main_thread().ident
+    assert ident is not None
+    assert calls == [(ident, signal.SIGINT)]
+
+
+def test_interrupt_main_skips_a_thread_without_an_ident(monkeypatch: pytest.MonkeyPatch) -> None:
+    calls: list[tuple[int, signal.Signals]] = []
+
+    class _NoIdent:
+        ident = None
+
+    monkeypatch.setattr("inspect_robots.session.threading.main_thread", lambda: _NoIdent())
+    monkeypatch.setattr(
+        "inspect_robots.session.signal.pthread_kill",
+        lambda ident, sig: calls.append((ident, sig)),
+    )
+    _interrupt_main()
+    assert calls == []
 
 
 def test_end_trial_joins_pump_thread_before_clearing() -> None:

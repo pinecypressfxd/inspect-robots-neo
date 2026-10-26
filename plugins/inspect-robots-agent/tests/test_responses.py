@@ -778,6 +778,68 @@ def test_encrypted_content_rejection_drops_reasoning_items_and_retries() -> None
     assert "function_call" in kinds and "function_call_output" in kinds
 
 
+def test_content_policy_rejection_drops_one_image_and_retries() -> None:
+    requests: list[dict[str, Any]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        requests.append(body)
+        images = [
+            part
+            for item in body["input"]
+            if isinstance(item, dict)
+            for part in item.get("content", [])
+            if isinstance(part, dict) and part.get("type") == "input_image"
+        ]
+        if images:
+            return httpx.Response(
+                400,
+                json={
+                    "error": {
+                        "type": "Bad Request",
+                        "message": "Image processing blocked due to content policy violation.",
+                    }
+                },
+            )
+        return httpx.Response(200, json=_response(_message("kept going")))
+
+    client = _client(handler, backoff_s=0.0)
+    message = client.complete(
+        [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "camera 'chest_rgbd':"},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,Y2hlc3Q="}},
+                    {"type": "text", "text": "camera 'left_rgbd':"},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,bGVmdA=="}},
+                ],
+            }
+        ],
+        [],
+    )
+
+    assert message.content == "kept going"
+    assert len(requests) == 3
+    first_images = [
+        part
+        for item in requests[0]["input"]
+        if isinstance(item, dict)
+        for part in item.get("content", [])
+        if isinstance(part, dict) and part.get("type") == "input_image"
+    ]
+    second_images = [
+        part
+        for item in requests[1]["input"]
+        if isinstance(item, dict)
+        for part in item.get("content", [])
+        if isinstance(part, dict) and part.get("type") == "input_image"
+    ]
+    assert len(first_images) == 2
+    assert len(second_images) == 1
+    assert second_images[0]["image_url"].endswith("bGVmdA==")
+
+
 def test_close_closes_underlying_http_client() -> None:
     client = _client(lambda request: httpx.Response(200, json=_response()))
 

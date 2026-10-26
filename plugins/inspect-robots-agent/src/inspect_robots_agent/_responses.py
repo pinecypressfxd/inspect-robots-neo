@@ -142,6 +142,14 @@ class ResponsesClient:
                         if patched != body:
                             body = patched
                             continue
+                if response.status_code == 400 and "content policy" in response.text.lower():
+                    # The gateway's image filter rejects some camera frames
+                    # (a person in the chest view is enough). Drop one frame
+                    # and retry so the trial keeps the other cameras.
+                    patched = _drop_one_input_image(body)
+                    if patched != body:
+                        body = patched
+                        continue
                 if response.status_code not in (429,) and response.status_code < 500:
                     raise RuntimeError(f"LLM request rejected — {last_error}")
             if attempt + 1 < self._max_retries:
@@ -151,6 +159,43 @@ class ResponsesClient:
     def close(self) -> None:
         """Release the underlying HTTP connection pool."""
         self._http.close()
+
+
+def _drop_one_input_image(body: dict[str, Any]) -> dict[str, Any]:
+    """Remove the earliest input image from the newest message that has one.
+
+    Camera parts are ordered chest, left, right. The chest view is the wide
+    frame that shows the operator, so it is the first image to leave.
+    """
+    items = body.get("input")
+    if not isinstance(items, list):
+        return body
+    for index in range(len(items) - 1, -1, -1):
+        item = items[index]
+        if not isinstance(item, dict):
+            continue
+        content = item.get("content")
+        if not isinstance(content, list):
+            continue
+        image_at = next(
+            (
+                part_index
+                for part_index, part in enumerate(content)
+                if isinstance(part, dict) and part.get("type") == "input_image"
+            ),
+            None,
+        )
+        if image_at is None:
+            continue
+        trimmed = [part for part_index, part in enumerate(content) if part_index != image_at]
+        new_items = list(items)
+        new_item = dict(item)
+        new_item["content"] = trimmed
+        new_items[index] = new_item
+        patched = dict(body)
+        patched["input"] = new_items
+        return patched
+    return body
 
 
 def _has_summaries(body: dict[str, Any]) -> bool:

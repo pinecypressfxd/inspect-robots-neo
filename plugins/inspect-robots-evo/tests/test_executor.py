@@ -4,7 +4,7 @@ from pathlib import Path
 import pytest
 
 from inspect_robots_evo.executor import Executor
-from inspect_robots_evo.motion import DIM_LABELS, interpolate, reached
+from inspect_robots_evo.motion import DIM_LABELS, applied_targets, interpolate, reached
 from inspect_robots_evo.workspace import Workspace
 
 
@@ -23,6 +23,14 @@ def _workspace(tmp_path: Path, source: str) -> Workspace:
     workspace = Workspace.create(tmp_path, "put the cup down", mode="playground", stamp="s")
     workspace.write_file("submission/solution.py", source)
     return workspace
+
+
+def test_step_action_moves_the_arm(tmp_path: Path) -> None:
+    port = FakePort()
+    source = "def solve():\n    step({'left_z': 0.2})\n    return 'placed'\n"
+    result = Executor(_workspace(tmp_path, source), port).run(threading.Event())
+    assert result.status == "returned"
+    assert port.calls == [{"left_z": 0.2}]
 
 
 def test_solve_can_move_and_return_a_string(tmp_path: Path) -> None:
@@ -108,6 +116,26 @@ def test_timeout_stops_before_a_second_move(tmp_path: Path) -> None:
     result = Executor(_workspace(tmp_path, source), port, clock=tick).run(threading.Event())
     assert result.status == "timeout"
     assert port.calls == []
+
+
+def test_horizontal_move_stays_at_cruise_height_until_xy_arrives() -> None:
+    current = dict.fromkeys(DIM_LABELS, 0.0)
+    current["left_x"] = 0.30
+    current["left_y"] = 0.27
+    current["left_z"] = 0.949
+    home = dict(current)
+    applied, limited = applied_targets(
+        current, {"left_x": 0.60, "left_y": 0.20, "left_z": 0.82}, home
+    )
+    assert limited == ("left_z",)
+    assert applied["left_z"] == pytest.approx(0.899)
+    rows, _steps = interpolate(current, applied, home=home)
+    z_index = DIM_LABELS.index("left_z")
+    x_index = DIM_LABELS.index("left_x")
+    descending = [row for row in rows if row[z_index] < 0.949 - 1e-6]
+    assert descending
+    assert descending[0][x_index] == pytest.approx(0.60)
+    assert all(row[z_index] == pytest.approx(0.949) for row in rows if row[x_index] < 0.60 - 1e-6)
 
 
 def test_interpolate_holds_unnamed_dimensions() -> None:

@@ -606,6 +606,97 @@ def test_raising_begin_trial_closes_footer_at_disable_time_before_later_statuses
     assert "Esc ends the episode" not in "".join(output)
 
 
+class _InterruptPolicy(_ProbePolicy):
+    """Raise from the first action so a blocked inference can be simulated."""
+
+    def act(self, observation: Observation) -> ActionChunk:
+        """Abort the trial the way a cancelled HTTP call would."""
+        raise KeyboardInterrupt("blocked call")
+
+
+class _PendingStop(FakeOperatorInput):
+    """Expose the echo pump's stop flag and an optional second-poll failure."""
+
+    def __init__(
+        self,
+        polls: list[ConsolePoll | BaseException],
+        *,
+        pending: bool = True,
+        poll_error: Exception | None = None,
+    ) -> None:
+        super().__init__(polls)
+        self._pending = pending
+        self._poll_error = poll_error
+
+    def stop_pending(self) -> bool:
+        """Report whether the pump has already interrupted the rollout."""
+        return self._pending
+
+    def poll(self) -> ConsolePoll:
+        """Fail the recovery poll once the loop has already polled once."""
+        if self._poll_error is not None and self.poll_calls >= 1:
+            self.poll_calls += 1
+            raise self._poll_error
+        return super().poll()
+
+
+def test_keyboard_interrupt_after_stop_pending_ends_the_trial() -> None:
+    operator_input = _PendingStop([ConsolePoll(), ConsolePoll(end=EndRequest())])
+
+    record = _run(
+        _InterruptPolicy(),
+        _TrackingEmbodiment(),
+        max_steps=3,
+        operator_input=operator_input,
+    )
+
+    assert record.status == "success"
+    assert record.terminated
+    assert record.termination_reason == OPERATOR_END
+    assert record.error is None
+
+
+def test_keyboard_interrupt_without_a_queued_end_stays_cancelled() -> None:
+    operator_input = _PendingStop([ConsolePoll(), ConsolePoll()], pending=True)
+
+    with pytest.raises(_CancelledTrial):
+        _run(
+            _InterruptPolicy(),
+            _TrackingEmbodiment(),
+            max_steps=3,
+            operator_input=operator_input,
+        )
+
+
+def test_keyboard_interrupt_ignores_a_failing_stop_poll() -> None:
+    operator_input = _PendingStop([ConsolePoll()], poll_error=RuntimeError("poll failed"))
+
+    with pytest.raises(_CancelledTrial):
+        _run(
+            _InterruptPolicy(),
+            _TrackingEmbodiment(),
+            max_steps=3,
+            operator_input=operator_input,
+        )
+
+
+def test_keyboard_interrupt_ignores_a_clear_stop_flag() -> None:
+    operator_input = _PendingStop([ConsolePoll()], pending=False)
+
+    with pytest.raises(_CancelledTrial):
+        _run(
+            _InterruptPolicy(),
+            _TrackingEmbodiment(),
+            max_steps=3,
+            operator_input=operator_input,
+        )
+
+
+def test_keyboard_interrupt_without_operator_input_stays_cancelled() -> None:
+    with pytest.raises(_CancelledTrial):
+        _run(_InterruptPolicy(), _TrackingEmbodiment(), max_steps=3)
+
+
 def test_keyboard_interrupt_from_poll_uses_cancelled_trial_path() -> None:
     original = KeyboardInterrupt("operator interrupt")
     operator_input = FakeOperatorInput([original])

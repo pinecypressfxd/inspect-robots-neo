@@ -130,15 +130,33 @@ def test_submit_converts_hwc_to_chw_and_passes_fields(fake_vla: _FakeVlaServer) 
     assert set(payload) == {"image0", "image1", "image2", "state", "task", "request_id"}
     # Sorted key order: chest_rgbd < left_rgbd < right_rgbd.
     for index, _key in enumerate(("chest_rgbd", "left_rgbd", "right_rgbd")):
-        # Nearest-resized to the checkpoint's 224 square, then CHW.
+        # Aspect-preserving resize to the checkpoint's 224 square, then CHW.
         assert payload[f"image{index}"].shape == (3, 224, 224)
-        assert payload[f"image{index}"].dtype == np.uint8
         assert payload[f"image{index}"].dtype == np.uint8
     np.testing.assert_array_equal(payload["state"], state)
     assert payload["state"].dtype == np.float32
     assert str(payload["task"].item()) == "pick up the cup"
     assert int(payload["request_id"].item()) == 5
     assert fake_vla.content_types == ["application/x-npz"]
+
+
+def test_submit_pads_640x480_on_top_like_ros_resize_with_pad(fake_vla: _FakeVlaServer) -> None:
+    """640x480 stays 4:3 inside 224x224, with the 56 empty rows on top.
+
+    That is ``image_to_chw_uint8`` + ``resize_with_pad`` on the ROS inference
+    client: scale by max(640/224, 480/224), bilinear, pad the leftover rows
+    above the image. Stretching to a square paints the top rows too.
+    """
+    frame = np.full((480, 640, 3), 255, dtype=np.uint8)
+    images = {"left_rgbd": frame, "right_rgbd": frame}
+    client = fake_vla.make_client()
+    client.submit(images, np.zeros(14, dtype=np.float32), "task", request_id=1)
+    client.close()
+
+    chw = fake_vla.received[0]["image0"]
+    assert chw.shape == (3, 224, 224)
+    assert int(chw[:, :56, :].max()) == 0
+    assert int(chw[:, 56:, :].min()) == 255
 
 
 def test_submit_without_images_omits_image_fields(fake_vla: _FakeVlaServer) -> None:

@@ -16,6 +16,10 @@ from __future__ import annotations
 TRAINED_SKILL_PROMPT = "put the cup on the pad with left arm and take away the cup with right arm"
 
 VLA_BASE_URL = "http://127.0.0.1:10055"
+#: ``ros2_nero_inference.yaml`` ``umi_replay_http.server_url``. The replay
+#: service speaks the same ``xyz_rpy`` wire and also requires
+#: ``replay_proprioception_json`` on ``/submit``.
+VLA_REPLAY_URL = "http://127.0.0.1:10054"
 VLA_SUBMIT_TIMEOUT_S = 10.0
 VLA_POLL_INTERVAL_S = 0.05
 VLA_POLL_TIMEOUT_S = 30.0
@@ -33,7 +37,9 @@ CHUNK_STEPS = 20
 ACTION_DIM_VLA = 14
 #: The checkpoint (PaliGemma-224) expects square 224x224 images; the
 #: client resizes each camera frame before packing (verified live 2026-09-18:
-#: 224 answers 200, native 480x640 fails inside the model).
+#: 224 answers 200, native 480x640 fails inside the model). The resize matches
+#: the ROS inference client: aspect-preserving bilinear, leftover rows padded
+#: on top (640x480 -> 224x168 content, 56 black rows above).
 VLA_IMAGE_SIZE = 224
 #: The service's slot semantics when the checkpoint config declares no
 # image_features (verified in serve_rlt_inference._image_keys_from_request):
@@ -44,11 +50,22 @@ ACTION_FORMAT = "xyz_rpy"
 
 # VlaPolicy defaults (plan 0084): the nero camera triple, the 20-dim EE state
 # key those cameras' checkpoint was trained against, and its control rate.
-#: The pure VLA policy's declared rate: the checkpoint's own action_freq
-#: (stage2_rlt_pi05_dualarm.json "action_freq": 10.0). The embodiment still
-#: paces the rollout, so pure-vla runs also want -E control_hz=10; the
-#: mismatch warning on a 30 Hz embodiment is the reminder.
+#: Open-loop chunk playback rate. The RLT stage2 config's action_freq is
+#: 10 Hz; the base VLA checkpoints and ``ros2_nero_inference.yaml`` are 30 Hz.
+#: ``schedule=tracked`` follows the yaml, so those runs pass ``control_hz=30``.
 VLA_CONTROL_HZ = 10.0
+#: ``ros2_nero_inference.yaml``: model steps at 30 Hz, a new chunk every 5 Hz,
+#: held for 300 ms (preview) then blended for 300 ms (transition). The
+#: controller looks ``lookahead_ms`` ahead; that field is 150.
+VLA_ACTION_HZ = 30.0
+#: ``ros2_nero_inference.yaml`` ``state_history_stride``. At ``VLA_ACTION_HZ``
+#: the older of the two last-action frames is this many action steps back
+#: (3 / 30 Hz = 100 ms). The model server treats the pair as already sampled.
+VLA_STATE_HISTORY_STRIDE = 3
+VLA_INFERENCE_HZ = 5.0
+VLA_PREVIEW_S = 0.3
+VLA_TRANSITION_S = 0.3
+VLA_LOOKAHEAD_S = 0.15
 #: The hybrid's declared rate: its analytic move_to segments are tuned at the
 #: embodiment's default pace, and its delegated VLA chunks inherit it.
 CONTROL_HZ = 30.0

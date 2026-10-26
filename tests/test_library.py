@@ -40,11 +40,12 @@ def test_entries_group_by_shared_instruction() -> None:
         [
             _entry("put the cup on the pad", "a.json", created="2026-09-14T00:00:00+00:00"),
             _entry("put the cup on the pad", "b.json", created="2026-09-15T00:00:00+00:00"),
-            _entry("fold the cloth", "c.json"),
+            _entry("fold the cloth", "c.json", created="2026-09-13T00:00:00+00:00"),
         ]
     )
-    assert [task.instruction for task in tasks] == ["fold the cloth", "put the cup on the pad"]
-    cup = tasks[1]
+    # Cards follow the newest run, so a later cup task precedes an earlier cloth task.
+    assert [task.instruction for task in tasks] == ["put the cup on the pad", "fold the cloth"]
+    cup = tasks[0]
     assert [run.name for run in cup.runs] == ["b.json", "a.json"]  # newest first
 
 
@@ -92,6 +93,15 @@ def test_mean_score_is_none_when_the_only_score_metric_is_null() -> None:
     assert mean_score(task) is None
 
 
+def test_library_page_uses_the_robot_background() -> None:
+    html = render_library([])
+    asset = Path(__file__).parents[1] / "src" / "inspect_robots" / "assets" / "robot.webp"
+
+    assert "data:image/webp;base64," in html
+    assert asset.is_file()
+    assert asset.read_bytes()[:4] == b"RIFF"
+
+
 def test_library_page_renders_task_links_and_stats() -> None:
     tasks = group_library(
         [
@@ -106,7 +116,8 @@ def test_library_page_renders_task_links_and_stats() -> None:
     assert "put the cup on the pad" in html
     assert "2 runs" in html and "1/2" in html
     assert "mean score 50" in html
-    assert "agent" in html
+    assert '<span class="kind">agent</span>put the cup on the pad' in html
+    assert '<span class="kind">agent</span>fold the cloth' in html
 
 
 def test_library_page_escapes_instructions() -> None:
@@ -206,6 +217,7 @@ def test_task_page_meta_line_and_policy_badges() -> None:
     html = render_task_page(tasks[0])
 
     assert "2 runs · success 1/2 · mean score 50" in html
+    assert "<h1><span class=\"kind\">agent</span><span class=\"kind\">pi0</span>t</h1>" in html
     assert '<span class="badge">agent</span>' in html
     assert '<span class="badge">pi0</span>' in html
 

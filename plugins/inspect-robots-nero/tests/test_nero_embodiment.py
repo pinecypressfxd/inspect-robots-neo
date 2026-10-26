@@ -15,7 +15,12 @@ from inspect_robots_nero import nero_embodiment
 from inspect_robots_nero._arm import NeroArm
 from inspect_robots_nero._config import GRIPPER_FORCE, GRIPPER_INIT_WIDTH_M, HOME_LEFT, HOME_RIGHT
 from inspect_robots_nero._kinematics import NeroKinematics, matrix_to_rot6d
-from inspect_robots_nero.embodiment import CameraFactory
+from inspect_robots_nero.embodiment import (
+    CameraFactory,
+    _older_joint_sample,
+    _past_joint_sample,
+    sensor_alignment_fault,
+)
 
 from .fakes import FakeAgxRobot
 
@@ -40,36 +45,46 @@ def _home_action(left_width: float, right_width: float) -> np.ndarray:
     )
 
 
-class FakeCamera:
-    def __init__(self) -> None:
-        self.started = False
-        self.stopped = False
-        self.frame = _FRAME
-
-    def start(self) -> None:
-        self.started = True
-
-    def read(self, *, max_age_s: float) -> tuple[np.ndarray, float]:
-        del max_age_s
-        return self.frame, 1.0
-
-    def stop(self) -> None:
-        self.stopped = True
-
-
 class _ScriptedClock:
     def __init__(self) -> None:
         self.now = 0.0
+
+    def peek(self) -> float:
+        return self.now
 
     def __call__(self) -> float:
         self.now += 1.0 / 30.0
         return self.now
 
 
+class FakeCamera:
+    def __init__(self, clock: _ScriptedClock) -> None:
+        self.started = False
+        self.stopped = False
+        self.frame = _FRAME
+        self._clock = clock
+        self.stamp_offset_s = 0.0
+
+    def start(self) -> None:
+        self.started = True
+
+    def read(self, *, max_age_s: float) -> tuple[np.ndarray, float]:
+        del max_age_s
+        return self.frame, self._clock.peek() + self.stamp_offset_s
+
+    def stop(self) -> None:
+        self.stopped = True
+
+
 class Harness:
-    def __init__(self, *, operator_reset_confirm: bool = False) -> None:
+    def __init__(
+        self, *, operator_reset_confirm: bool = False, trace_dir: str | None = None
+    ) -> None:
         self.robots = {"left": FakeAgxRobot(), "right": FakeAgxRobot()}
-        self.cameras = {name: FakeCamera() for name in ("left_rgbd", "right_rgbd", "chest_rgbd")}
+        self.clock = _ScriptedClock()
+        self.cameras = {
+            name: FakeCamera(self.clock) for name in ("left_rgbd", "right_rgbd", "chest_rgbd")
+        }
         self.sleeps: list[float] = []
 
         def make_arm(side: str) -> NeroArm:
@@ -86,8 +101,9 @@ class Harness:
             operator_reset_confirm=operator_reset_confirm,
             arm_factory=make_arm,
             camera_factory=make_camera,
-            clock=_ScriptedClock(),
+            clock=self.clock,
             sleep=self.sleeps.append,
+            trace_dir=trace_dir,
         )
         self.embodiment = embodiment
 
@@ -97,9 +113,17 @@ def test_reset_enables_homes_and_returns_first_observation() -> None:
     observation = harness.embodiment.reset(Scene(id="s0", instruction="put the cup on the pad"))
     for robot in harness.robots.values():
         assert robot.enabled and robot.speed == 20 and robot.mode == "follower"
-        assert robot.move_js_calls[-1] == tuple(
-            HOME_LEFT if robot is harness.robots["left"] else HOME_RIGHT
-        )
+        home = HOME_LEFT if robot is harness.robots["left"] else HOME_RIGHT
+        # Seat with move_j, enter follower, then the home trajectory.
+        # No move_js here: that API has no smoothing and twitches a settled arm.
+        assert robot.move_j_calls[0] == (0.1, 0.2, 0.0, 0.5, 0.0, 0.0, 0.3)
+        assert robot.move_j_calls[-1] == tuple(home)
+        assert robot.move_js_calls == []
+        events = [event[0] for event in robot.events]
+        move_j_at = [index for index, kind in enumerate(events) if kind == "move_j"]
+        assert "set_follower_mode" not in events[: move_j_at[0]]
+        assert "set_speed_percent" not in events[: move_j_at[0]]
+        assert move_j_at[0] < events.index("set_follower_mode") < move_j_at[-1]
     for camera in harness.cameras.values():
         assert camera.started and not camera.stopped
     assert observation.instruction == "put the cup on the pad"
@@ -108,6 +132,63 @@ def test_reset_enables_homes_and_returns_first_observation() -> None:
     assert observation.state["joint_pos"].shape == (16,)
     gripper_dims = (observation.state["joint_pos"][14], observation.state["joint_pos"][15])
     assert gripper_dims == (0.09, 0.09)  # the fake effector reports its 0.09 init width
+
+
+def test_observation_carries_measured_proprio_history() -> None:
+    """The aligned pose is the history anchor, and 200 Hz reads append before it."""
+    harness = Harness()
+    observation = harness.embodiment.reset(Scene(id="s0", instruction="x"))
+    history = observation.extra["proprio_history"]
+    anchor = observation.extra["proprio_time_ns"]
+    assert history[-1][0] == anchor
+    assert np.allclose(history[-1][1], observation.state["eef_state"])
+
+    stored = len(harness.embodiment._proprio)
+    harness.embodiment.control_hz = 200.0
+    harness.embodiment._control_pump = harness.embodiment._pump_control_sync
+    stay = np.asarray(observation.state["eef_state"], dtype=np.float64).copy()
+    stepped = harness.embodiment.step(Action(data=stay))
+    later = stepped.observation.extra["proprio_history"]
+    assert len(harness.embodiment._proprio) > stored
+    assert later[-1][0] == stepped.observation.extra["proprio_time_ns"]
+    assert np.allclose(later[-1][1], stepped.observation.state["eef_state"])
+    stamps = [stamp for stamp, _pose in later]
+    assert stamps == sorted(set(stamps))
+
+
+def test_past_joint_sample_stays_at_or_before_the_image() -> None:
+    """A reading newer than the picture is not the pose sent with that picture."""
+    joints = np.zeros(14)
+    image_ns = 1_000_000_000
+    samples = (
+        (image_ns - 20_000_000, joints, 0.09, 0.09),
+        (image_ns + 5_000_000, joints + 1.0, 0.05, 0.09),
+    )
+    chosen = _past_joint_sample(samples, image_ns)
+    assert chosen is not None
+    assert chosen[0] == image_ns - 20_000_000
+    stale = ((image_ns - 33_333_334, joints, 0.09, 0.09),)
+    assert _past_joint_sample(stale, image_ns) is None
+
+
+def test_older_joint_sample_matches_the_ros_window() -> None:
+    """100 ms earlier, within 33 ms. A larger gap is refused."""
+    joints = np.zeros(14)
+    anchor = 300_000_000
+    older = anchor - 99_999_999
+    samples = (
+        (older - 20_000_000, joints, 0.09, 0.09),
+        (older + 10_000_000, joints, 0.08, 0.09),
+        (anchor, joints, 0.07, 0.09),
+    )
+    chosen = _older_joint_sample(samples, anchor)
+    assert chosen is not None
+    assert chosen[0] == older - 20_000_000
+    gapped = (
+        (anchor - 99_999_999 - 33_333_334, joints, 0.09, 0.09),
+        (anchor, joints, 0.09, 0.09),
+    )
+    assert _older_joint_sample(gapped, anchor) is None
 
 
 def test_reset_confirm_prompts_when_enabled(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -155,7 +236,9 @@ def test_connected_session_owns_the_reset_confirm(
     assert not inputs  # the session owns stdin; the embodiment never reads it
     assert session.gates == ["Arrange the scene, instruction: put the cup down"]
     assert any("put the cup down" in line for line in session.lines)
-    assert capsys.readouterr().out == ""  # stand-down: no own printing either
+    out = capsys.readouterr().out
+    assert "Arrange the scene" not in out
+    assert out.startswith("[timing] connect+home ")
 
 
 def test_step_commands_bounded_joint_deltas_and_gripper_widths() -> None:
@@ -164,8 +247,84 @@ def test_step_commands_bounded_joint_deltas_and_gripper_widths() -> None:
     action = _home_action(GRIPPER_INIT_WIDTH_M, 0.02)
     result = harness.embodiment.step(Action(data=action))
     for robot in harness.robots.values():
-        assert len(robot.move_js_calls) == 2  # home, then one step command
+        assert len(robot.move_js_calls) == 1
     assert result.observation.images["left_rgbd"].shape == (480, 640, 3)
+
+
+def test_trace_dir_writes_the_commanded_sample(tmp_path: object) -> None:
+    from pathlib import Path
+
+    root = Path(str(tmp_path))
+    harness = Harness(trace_dir=str(root))
+    harness.embodiment.reset(Scene(id="s0", instruction="x"))
+    harness.embodiment.step(Action(data=_home_action(GRIPPER_INIT_WIDTH_M, GRIPPER_INIT_WIDTH_M)))
+    harness.embodiment.close()
+    episode = next(path for path in root.iterdir() if path.is_dir())
+    assert (root / "current").read_text(encoding="utf-8").strip() == episode.name
+    line = (episode / "motion.jsonl").read_text(encoding="utf-8").strip()
+    assert '"held":false' in line
+    assert len(line) > 50
+
+
+def test_sensor_alignment_matches_the_ros_windows() -> None:
+    times = {"left_rgbd": 1.00, "right_rgbd": 1.02, "chest_rgbd": 1.03}
+    assert (
+        sensor_alignment_fault(
+            now=1.05,
+            camera_times=times,
+            joint_time=1.01,
+            skew_s=0.040,
+            lag_s=0.033,
+            stale_s=0.100,
+        )
+        is None
+    )
+    assert (
+        sensor_alignment_fault(
+            now=1.05,
+            camera_times={**times, "chest_rgbd": 1.05},
+            joint_time=1.01,
+            skew_s=0.040,
+            lag_s=0.033,
+            stale_s=0.100,
+        )
+        == "triplet_skew"
+    )
+    assert (
+        sensor_alignment_fault(
+            now=1.20,
+            camera_times=times,
+            joint_time=1.01,
+            skew_s=0.040,
+            lag_s=0.033,
+            stale_s=0.100,
+        )
+        == "stale"
+    )
+    assert (
+        sensor_alignment_fault(
+            now=1.05,
+            camera_times=times,
+            joint_time=0.90,
+            skew_s=0.040,
+            lag_s=0.033,
+            stale_s=0.100,
+        )
+        == "arm_lag"
+    )
+
+
+def test_skewed_cameras_fault_the_observation() -> None:
+    harness = Harness()
+    harness.cameras["chest_rgbd"].stamp_offset_s = 0.050
+
+    def advancing(delay_s: float) -> None:
+        harness.sleeps.append(delay_s)
+        harness.clock.now += delay_s
+
+    harness.embodiment._sleep = advancing
+    with pytest.raises(EmbodimentFault, match="triplet_skew"):
+        harness.embodiment.reset(Scene(id="s0", instruction="x"))
 
 
 def test_unreachable_target_holds_and_keeps_the_rollout_alive(
@@ -191,12 +350,13 @@ def test_unreachable_target_holds_and_keeps_the_rollout_alive(
 
     assert result.observation.state["eef_state"].shape == (20,)
     for side, robot in harness.robots.items():
-        assert robot.move_js_calls == before[side]  # nothing commanded: held
+        # Rejected before any move_js: the move_j hold stays, nothing is streamed.
+        assert robot.move_js_calls == before[side]
     assert capsys.readouterr().err.count("holding position") == 1  # once per streak
 
     harness.embodiment.step(Action(data=_home_action(0.05, 0.05)))
     for robot in harness.robots.values():
-        assert len(robot.move_js_calls) == len(before["left"]) + 1  # recovered
+        assert len(robot.move_js_calls) == len(before["left"]) + 1
 
 
 def test_step_paces_itself_to_control_hz() -> None:
@@ -243,21 +403,100 @@ def test_close_disables_arms_and_stops_cameras() -> None:
         assert camera.stopped
 
 
-def test_step_clamps_per_tick_joint_delta() -> None:
+def test_step_holds_when_the_joint_jump_exceeds_the_policy_limit(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A 0.15 m shift needs ~0.54 rad. Agent (0.1) holds; vla (1.0) commands it."""
     harness = Harness()
     harness.embodiment.reset(Scene(id="s0", instruction="x"))
-    pre = {side: np.asarray(robot.angles) for side, robot in harness.robots.items()}
-    # +0.15 m along +x stays inside the sampled workspace and converges from the
-    # home seed; the raw IK solution moves the left arm 0.54 rad, well past the
-    # 0.1 rad per-tick clamp, so the clipped path is genuinely exercised.
+    before = {side: list(robot.move_js_calls) for side, robot in harness.robots.items()}
     action = _home_action(GRIPPER_INIT_WIDTH_M, GRIPPER_INIT_WIDTH_M)
     action[0] += 0.15
     harness.embodiment.step(Action(data=action))
-    for side in ("left", "right"):
-        commanded = np.asarray(harness.robots[side].move_js_calls[-1])
-        assert float(np.max(np.abs(commanded - pre[side]))) <= 0.1 + 1e-9
-    left_commanded = np.asarray(harness.robots["left"].move_js_calls[-1])
-    assert float(np.max(np.abs(left_commanded - pre["left"]))) > 0.02
+    for side, robot in harness.robots.items():
+        assert robot.move_js_calls == before[side]
+    assert "holding position" in capsys.readouterr().err
+
+    wide = Harness()
+    wide.embodiment.max_joint_step_rad = 1.0
+    wide.embodiment.reset(Scene(id="s0", instruction="x"))
+    pre = {side: np.asarray(robot.angles) for side, robot in wide.robots.items()}
+    wide.embodiment.step(Action(data=action))
+    left_commanded = np.asarray(wide.robots["left"].move_js_calls[-1])
+    delta = float(np.max(np.abs(left_commanded - pre["left"])))
+    assert 0.1 < delta <= 1.0 + 1e-9
+
+
+def test_one_centimeter_lift_is_commanded_at_the_agent_joint_limit() -> None:
+    """A 1 cm raise needs slightly more than one 0.1 rad IK iteration.
+
+    Harness move_to splits motion into 1 cm ticks. Those solutions were
+    success=True at about 0.11-0.13 rad, and the old 0.1 hold froze the arm
+    for the rest of the chunk.
+    """
+    harness = Harness()
+    harness.embodiment.reset(Scene(id="s0", instruction="x"))
+    action = np.asarray(harness.embodiment._last_ee, dtype=np.float64).copy()
+    action[2] += 0.01
+    harness.embodiment.step(Action(data=action))
+    assert harness.robots["left"].move_js_calls
+
+
+def test_small_orientation_offset_stays_near_home() -> None:
+    """A few milliradians of orientation must not drag the arms toward URDF neutral."""
+    from scipy.spatial.transform import Rotation
+
+    from inspect_robots_nero._kinematics import rot6d_to_matrix
+
+    harness = Harness()
+    harness.embodiment.reset(Scene(id="s0", instruction="x"))
+    action = np.asarray(harness.embodiment._last_ee, dtype=np.float64).copy()
+    rotation = rot6d_to_matrix(action[3:9])
+    turned = Rotation.from_euler("xyz", [0.0, 0.002, 0.0]).as_matrix() @ rotation
+    action[3:9] = matrix_to_rot6d(turned)
+    home = np.asarray(harness.robots["left"].angles)
+    harness.embodiment.step(Action(data=action))
+    assert harness.robots["left"].move_js_calls
+    delta = float(np.max(np.abs(np.asarray(harness.robots["left"].move_js_calls[-1]) - home)))
+    assert delta < 0.05
+
+
+def test_vla_control_hz_splits_one_30hz_target_across_200hz() -> None:
+    """vla passes control_hz=200: one policy tick solves seven times, 5 ms apart."""
+    harness = Harness()
+    harness.embodiment.control_hz = 200.0
+    harness.embodiment.max_joint_step_rad = 1.0
+    # Wire the synchronous pump so the 200 Hz substeps run inline (the
+    # background thread stays off in tests).
+    harness.embodiment._control_pump = harness.embodiment._pump_control_sync
+    harness.embodiment.reset(Scene(id="s0", instruction="x"))
+    home = np.asarray(harness.robots["left"].angles)
+    stay = np.asarray(harness.embodiment._last_ee, dtype=np.float64).copy()
+    slept = len(harness.sleeps)
+    harness.embodiment.step(Action(data=stay))
+    calls = list(harness.robots["left"].move_js_calls)
+    assert len(calls) == 7  # round(200 / 30)
+    assert harness.sleeps[slept:].count(1.0 / 200.0) == 6
+    assert float(np.max(np.abs(np.asarray(calls[-1]) - home))) < 0.05
+
+    seen: list[float] = []
+
+    def sample(dt: float) -> np.ndarray:
+        assert dt == pytest.approx(1.0 / 200.0)
+        pose = stay.copy()
+        pose[0] += 0.04 * (len(seen) + 1)
+        seen.append(float(pose[0]))
+        return pose
+
+    # Each 5 ms tick reads the trajectory sampler. It does not chord two poses.
+    harness.embodiment.step(Action(data=stay, meta={"trajectory_sample": sample}))
+    assert len(seen) == 7
+    moved = harness.robots["left"].move_js_calls[len(calls) :]
+    assert len(moved) == 7
+    first = float(np.max(np.abs(np.asarray(moved[0]) - home)))
+    last = float(np.max(np.abs(np.asarray(moved[-1]) - home)))
+    assert first > 0.02
+    assert first < last
 
 
 def test_non_finite_joint_feedback_raises_embodiment_fault() -> None:

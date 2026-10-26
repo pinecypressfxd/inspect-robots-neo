@@ -439,6 +439,38 @@ jobs:
           uv run --no-sync python -m pytest plugins/inspect-robots-nero/tests -q
           --cov=inspect_robots_nero --cov-report=term-missing --cov-fail-under=0
 
+  # HarnessVLA reuses the hybrid executor and injected fakes. No robot, no
+  # VLA service, no LLM network.
+  plugin-harness:
+    name: plugin · harness
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            **/pyproject.toml
+            **/uv.lock
+      - name: Sync workspace (core + plugins, dev extras)
+        run: uv sync --locked --python 3.11 --all-packages --extra dev
+      - name: Ruff (plugin, lint)
+        run: uv run --no-sync ruff check plugins/inspect-robots-harness
+      - name: Ruff (plugin, format check)
+        run: uv run --no-sync ruff format --check plugins/inspect-robots-harness
+      - name: Mypy (plugin, strict)
+        run: >
+          uv run --no-sync mypy
+          --config-file plugins/inspect-robots-harness/pyproject.toml
+          plugins/inspect-robots-harness/src/inspect_robots_harness
+      - name: Pytest (plugin, with coverage)
+        run: >
+          uv run --no-sync python -m pytest plugins/inspect-robots-harness/tests -q
+          --cov=inspect_robots_harness --cov-report=term-missing --cov-fail-under=0
+
   # Guard against the #208/#212 accident class: eval outputs (or any large
   # blob) swept into a commit by git add -A. Per-file pre-commit hooks are
   # local-only and GitHub's own limit is 100 MB per file, so 3 GB of small
@@ -477,7 +509,7 @@ jobs:
   ci-ok:
     name: ci-ok
     if: ${{ always() }}
-    needs: [quality, docs-build, test, test-rerun, test-extra, core-only-import, plugin-isaacsim, plugin-xpolicylab, plugin-voice, plugin-ros, plugin-agent, plugin-capx, plugin-nero, repo-hygiene]
+    needs: [quality, docs-build, test, test-rerun, test-extra, core-only-import, plugin-isaacsim, plugin-xpolicylab, plugin-voice, plugin-ros, plugin-agent, plugin-capx, plugin-nero, plugin-harness, repo-hygiene]
     runs-on: ubuntu-latest
     steps:
       - name: Fail unless every needed job succeeded
@@ -490,7 +522,7 @@ jobs:
   alert-red-main:
     name: alert on red main
     if: ${{ failure() && github.event_name == 'push' }}
-    needs: [quality, docs-build, test, test-rerun, test-extra, core-only-import, plugin-isaacsim, plugin-xpolicylab, plugin-voice, plugin-ros, plugin-agent, plugin-capx, plugin-nero]
+    needs: [quality, docs-build, test, test-rerun, test-extra, core-only-import, plugin-isaacsim, plugin-xpolicylab, plugin-voice, plugin-ros, plugin-agent, plugin-capx, plugin-nero, plugin-harness]
     runs-on: ubuntu-latest
     permissions:
       issues: write

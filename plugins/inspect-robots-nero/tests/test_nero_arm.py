@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from inspect_robots_nero._arm import _FIRMWARE_NAMES, NeroArm
@@ -180,4 +182,32 @@ def test_damped_disable_damps_before_disabling() -> None:
     arm.enable()
     assert arm.damped_disable() is True
     assert robot.damped_stops == 1  # damping sent before the disable
+    assert robot.motion_resets == 1  # latch cleared so disable is accepted
     assert not robot.enabled
+
+
+def test_damped_disable_keeps_damping_until_the_descent_stops() -> None:
+    robot = FakeAgxRobot()
+    reads = {"n": 0}
+
+    def moving() -> object:
+        reads["n"] += 1
+        value = 0.05 * reads["n"] if reads["n"] <= 4 else 0.2
+        robot.angles = (value,) * 7
+        return SimpleNamespace(msg=list(robot.angles))
+
+    robot.get_joint_angles = moving  # type: ignore[method-assign]
+    resets_at_read: list[int] = []
+    original_reset = robot.reset
+
+    def reset() -> None:
+        resets_at_read.append(reads["n"])
+        original_reset()
+
+    robot.reset = reset  # type: ignore[method-assign]
+    arm = NeroArm("left", "can_left", robot=robot, sleep=lambda _s: None)
+    arm.connect()
+    arm.enable()
+    assert arm.damped_disable(poll_s=0.05, still_s=0.2, descent_timeout_s=2.0) is True
+    assert resets_at_read == [reads["n"]]
+    assert reads["n"] > 4  # latch stays on while the joints are still moving

@@ -78,18 +78,19 @@ class Executor:
             return SubmitResult("error", None, traceback.format_exc(), "", 0)
         self._bind(namespace, abort, start)
 
-        def move_ee(targets: Mapping[str, float]) -> Mapping[str, object]:
+        def step(action: Mapping[str, float]) -> Mapping[str, object]:
             nonlocal moves
             self._guard(abort, start)
             if moves >= self.max_moves:
                 raise MoveLimit()
-            result = self.port.move(dict(targets), abort)
+            result = self.port.move(dict(action), abort)
             moves += 1
             if getattr(abort, "is_set", lambda: False)():
                 raise Aborted()
             return result
 
-        namespace["move_ee"] = move_ee
+        namespace["step"] = step
+        namespace["move_ee"] = step
         try:
             with redirect_stdout(buffer):
                 value = namespace["solve"]()
@@ -108,7 +109,11 @@ class Executor:
     def _bind(self, namespace: dict[str, object], abort: object, start: float) -> None:
         def get_instruction() -> str:
             self._guard(abort, start)
-            return (self.workspace.root / "task.md").read_text(encoding="utf-8")
+            root = self.workspace.root
+            path = root / "instruction.md"
+            if not path.is_file():
+                path = root / "task.md"
+            return path.read_text(encoding="utf-8")
 
         def get_observation() -> dict[str, object]:
             self._guard(abort, start)
@@ -145,9 +150,7 @@ class Executor:
             raise SandboxError("solve() is missing")
         return namespace
 
-    def _exec_skill(
-        self, path: Path, namespace: dict[str, object], defined: set[str]
-    ) -> None:
+    def _exec_skill(self, path: Path, namespace: dict[str, object], defined: set[str]) -> None:
         source = path.read_text(encoding="utf-8")
         check_source(source)
         tree = ast.parse(source)

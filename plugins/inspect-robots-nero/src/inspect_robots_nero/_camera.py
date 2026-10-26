@@ -113,6 +113,17 @@ class D405Camera:
             if not ok:
                 time.sleep(self._poll_s)
                 continue
+            # Match the ROS camera path: YUYV -> BGR -> JPEG q85 -> RGB.
+            # The model was fed that roundtrip on the working inference stack.
+            from inspect_robots_nero._config import JPEG_QUALITY
+
+            ok_jpeg, encoded = cv2.imencode(
+                ".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), JPEG_QUALITY]
+            )
+            if ok_jpeg:
+                decoded = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
+                if decoded is not None:
+                    frame = decoded
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             with self._lock:
                 self._latest = (rgb, self._clock())

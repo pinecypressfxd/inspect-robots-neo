@@ -1,9 +1,9 @@
 """Operator CLI for the Nero arms: home after power-on, or drop limp fast.
 
-``home`` recovers each arm (latch clear + enable retry), then applies the
-reference stack's reset: prime the trajectory planner with the CURRENT
-joint angles, pause, one firmware ``move_j`` straight to the config home
-from any state; grippers open after the arms.
+``home`` matches the reference reset: seat each arm with one firmware
+``move_j`` of its measured joints, then one ``move_j`` to the config home.
+Speed is set only after that seat, so a fresh driver does not drop the MIT
+hold left by the previous task. Grippers open after the arms.
 ``disable`` ports ``disable_arms.py``: without ``--yes`` it only warns and
 exits 2; with it, it disables and polls the per-joint enable flags until
 every joint reports limp or ``--timeout`` expires (exit 1 on timeout).
@@ -28,7 +28,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     home = subparsers.add_parser(
-        "home", help="enable arms, open grippers, and stream joints to home"
+        "home", help="firmware move_j back to the config home from the current pose"
     )
     home.add_argument("--arm", choices=ARM_CHOICES, default="both")
     home.add_argument(
@@ -40,7 +40,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     disable = subparsers.add_parser("disable", help="disable arms until all joints report limp")
     disable.add_argument("--arm", choices=ARM_CHOICES, default="both")
-    disable.add_argument("--timeout", type=float, default=5.0)
+    disable.add_argument("--timeout", type=float, default=20.0)
     disable.add_argument("--yes", action="store_true")
     return parser
 
